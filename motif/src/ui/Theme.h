@@ -26,6 +26,9 @@ namespace colour {
     const juce::Colour fitted   { 0xff5ee6c5 };   // mint  — as fitted
     const juce::Colour hot      { 0xffff5c7a };   // record
     const juce::Colour gold     { 0xffffd479 };
+    const juce::Colour violet   { 0xffc77dff };   // delay, so it reads apart from reverb
+
+    inline juce::Colour accent2() { return violet; }
 }
 
 /** Rounded panel with a hairline and a faint inner lift. */
