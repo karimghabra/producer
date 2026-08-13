@@ -43,6 +43,47 @@ juce::String ms(float v) {
 }
 juce::String pct(float v) { return juce::String(int(v * 100.0f)); }
 
+/**
+ * Trig conditions, as the short labels a sequencer shows on a step.
+ *
+ * `a:b` fires only on pass a of every b, which is how a two-bar pattern grows
+ * into a thirty-two-bar arrangement without a timeline to draw on.
+ */
+struct CondPreset { const char* label; TrigCondition cond; const char* blurb; };
+
+const std::vector<CondPreset>& condPresets() {
+    using T = TrigCondition::Type;
+    static const std::vector<CondPreset> kList = {
+        { "\xe2\x80\x94", { T::Always, 1.0f, 1, 4 },      "always plays" },
+        { "90%",  { T::Probability, 0.90f, 1, 4 },        "plays nine times in ten" },
+        { "75%",  { T::Probability, 0.75f, 1, 4 },        "plays three times in four" },
+        { "50%",  { T::Probability, 0.50f, 1, 4 },        "a coin flip" },
+        { "25%",  { T::Probability, 0.25f, 1, 4 },        "rare" },
+        { "1:2",  { T::Ratio, 1.0f, 1, 2 },               "every other pass" },
+        { "2:2",  { T::Ratio, 1.0f, 2, 2 },               "the other pass" },
+        { "1:3",  { T::Ratio, 1.0f, 1, 3 },               "first of every three" },
+        { "1:4",  { T::Ratio, 1.0f, 1, 4 },               "first of every four" },
+        { "4:4",  { T::Ratio, 1.0f, 4, 4 },               "last of every four" },
+        { "1:8",  { T::Ratio, 1.0f, 1, 8 },               "first of every eight" },
+        { "8:8",  { T::Ratio, 1.0f, 8, 8 },               "last of every eight" },
+        { "1ST",  { T::First, 1.0f, 1, 4 },               "first pass only" },
+        { "!1ST", { T::NotFirst, 1.0f, 1, 4 },            "every pass but the first" },
+    };
+    return kList;
+}
+
+bool sameCondition(const TrigCondition& a, const TrigCondition& b) {
+    if (a.type != b.type) return false;
+    if (a.type == TrigCondition::Type::Probability) return std::abs(a.chance - b.chance) < 0.01f;
+    if (a.type == TrigCondition::Type::Ratio) return a.hit == b.hit && a.of == b.of;
+    return true;
+}
+
+juce::String condLabel(const TrigCondition& c) {
+    for (const auto& p : condPresets()) if (sameCondition(p.cond, c)) return p.label;
+    return "?";
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -156,8 +197,9 @@ bool MainComponent::keyPressed(const juce::KeyPress& key) {
     const auto c = key.getTextCharacter();
     if (c == 'r' || c == 'R') { toggleRecord(); return true; }
     if (c == '1') { view_ = View::Arrange; return true; }
-    if (c == '2') { view_ = View::Mix; return true; }
-    if (c == '3') { view_ = View::Sound; return true; }
+    if (c == '2') { view_ = View::Steps; return true; }
+    if (c == '3') { view_ = View::Mix; return true; }
+    if (c == '4') { view_ = View::Sound; return true; }
     if (key == juce::KeyPress::leftKey)  { octaveOffset_ = juce::jlimit(-3, 3, octaveOffset_ - 1); return true; }
     if (key == juce::KeyPress::rightKey) { octaveOffset_ = juce::jlimit(-3, 3, octaveOffset_ + 1); return true; }
     if (key == juce::KeyPress::upKey)   { selectTrack(selectedTrack_ - 1); return true; }
@@ -327,8 +369,11 @@ void MainComponent::resized() {
     btns.removeFromLeft(7);
     keepButton_ = btns.removeFromLeft(112);
 
-    auto tabs = headerArea_.withTrimmedLeft(520).withWidth(300).reduced(0, 12);
-    for (int i = 0; i < 3; ++i) { viewTabs_[size_t(i)] = tabs.removeFromLeft(96); tabs.removeFromLeft(4); }
+    auto tabs = headerArea_.withTrimmedLeft(516).withWidth(376).reduced(0, 12);
+    for (int i = 0; i < kViewCount; ++i) {
+        viewTabs_[size_t(i)] = tabs.removeFromLeft(90);
+        tabs.removeFromLeft(4);
+    }
 
     strengthSlider_ = stripArea_.reduced(16, 14).removeFromLeft(240).withTrimmedTop(24).withHeight(13);
 }
@@ -364,6 +409,7 @@ void MainComponent::paint(juce::Graphics& g) {
     paintTrackRail(g);
     switch (view_) {
         case View::Arrange: paintArrangeView(g); break;
+        case View::Steps:   paintStepsView(g); break;
         case View::Mix:     paintMixView(g); break;
         case View::Sound:   paintSoundView(g); break;
     }
@@ -414,9 +460,9 @@ void MainComponent::paintHeader(juce::Graphics& g) {
     button(keepButton_, "KEEP TAKE", colour::played,
            !take_.fitted.empty() && !takeIsCommitted_, 0.6f, [this] { commitTakeToTrack(); });
 
-    const char* names[3] = { "ARRANGE", "MIX", "SOUND" };
-    const View views[3] = { View::Arrange, View::Mix, View::Sound };
-    for (int i = 0; i < 3; ++i) {
+    const char* names[kViewCount] = { "ARRANGE", "STEPS", "MIX", "SOUND" };
+    const View views[kViewCount] = { View::Arrange, View::Steps, View::Mix, View::Sound };
+    for (int i = 0; i < kViewCount; ++i) {
         const bool on = view_ == views[i];
         const auto b = viewTabs_[size_t(i)];
         g.setColour(on ? colour::ink2.brighter(0.2f) : juce::Colours::transparentBlack);
@@ -608,6 +654,283 @@ void MainComponent::paintArrangeView(juce::Graphics& g) {
     g.setColour(colour::fitted);
     g.drawText("AS FITTED", mainArea_.reduced(16, 9).removeFromTop(27).removeFromBottom(13),
                juce::Justification::topRight, false);
+}
+
+// --- steps -----------------------------------------------------------------
+
+void MainComponent::paintStepsView(juce::Graphics& g) {
+    Track* track = selected();
+    if (!track || !track->current()) {
+        drawPanel(g, mainArea_.toFloat(), 12.0f);
+        return;
+    }
+    const Pattern& pattern = *track->current();
+    const juce::Colour tint(track->colour);
+    const int trackIdx = selectedTrack_;
+    const int patIdx = track->activePattern;
+
+    auto editPattern = [this, trackIdx, patIdx](std::function<void(Pattern&)> fn) {
+        engine_.editSong([trackIdx, patIdx, fn](Song& s) {
+            if (trackIdx >= int(s.tracks.size())) return;
+            auto& ps = s.tracks[size_t(trackIdx)].patterns;
+            if (patIdx >= 0 && patIdx < int(ps.size())) fn(ps[size_t(patIdx)]);
+        });
+        song_ = engine_.song();
+    };
+    auto editStep = [editPattern](int index, std::function<void(Step&)> fn) {
+        editPattern([index, fn](Pattern& p) {
+            if (index >= 0 && index < int(p.steps.size())) fn(p.steps[size_t(index)]);
+        });
+    };
+
+    auto area = mainArea_;
+    auto inspector = area.removeFromBottom(176);
+    area.removeFromBottom(10);
+
+    // --- grid -------------------------------------------------------------
+    drawPanel(g, area.toFloat(), 12.0f);
+    auto grid = area.reduced(14, 12);
+
+    auto slotRow = grid.removeFromTop(24);
+    g.setColour(tint);
+    g.setFont(uiFont(13.0f, true));
+    g.drawText(track->name, slotRow.removeFromLeft(110), juce::Justification::centredLeft, false);
+
+    for (size_t i = 0; i < track->patterns.size() && slotRow.getWidth() > 130; ++i) {
+        const int idx = int(i);
+        drawChip(g, slotRow.removeFromLeft(58).reduced(2, 1),
+                 track->patterns[i].name, tint, idx == patIdx,
+                 [this, trackIdx, idx] {
+                     engine_.editSong([trackIdx, idx](Song& s) {
+                         if (trackIdx < int(s.tracks.size())) s.tracks[size_t(trackIdx)].activePattern = idx; });
+                     song_ = engine_.song();
+                     selectedStep_ = -1;
+                 });
+    }
+    drawChip(g, slotRow.removeFromLeft(34).reduced(2, 1), "+", colour::dim, false,
+             [this, trackIdx] {
+                 engine_.editSong([trackIdx](Song& s) {
+                     if (trackIdx >= int(s.tracks.size())) return;
+                     auto& t = s.tracks[size_t(trackIdx)];
+                     Pattern p;
+                     p.name = juce::String::charToString(juce::juce_wchar('A' + t.patterns.size())).toStdString();
+                     t.patterns.push_back(p);
+                     t.activePattern = int(t.patterns.size()) - 1;
+                 });
+                 song_ = engine_.song();
+             });
+
+    auto tools = slotRow.removeFromRight(210);
+    drawChip(g, tools.removeFromLeft(66).reduced(2, 1), "CLEAR", colour::dim, false,
+             [editPattern] { editPattern([](Pattern& p) { for (auto& s : p.steps) s = Step{}; }); });
+    drawChip(g, tools.removeFromLeft(66).reduced(2, 1), "EUCLID", colour::fitted, pattern.euclidMode,
+             [editPattern, on = pattern.euclidMode] {
+                 editPattern([on](Pattern& p) { p.euclidMode = !on; }); });
+    drawChip(g, tools.removeFromLeft(66).reduced(2, 1), "DICE", colour::gold, false,
+             [editPattern] {
+                 // The logistic map, not a uniform random. It clusters - runs of
+                 // hits and runs of rests - which sounds far more like a played
+                 // part than evenly scattered noise.
+                 editPattern([](Pattern& p) {
+                     double x = 0.31 + double(juce::Random::getSystemRandom().nextFloat()) * 0.3;
+                     for (size_t i = 0; i < p.steps.size(); ++i) {
+                         x = theory::logisticStep(x);
+                         const bool downbeat = (i % size_t(juce::jmax(1, p.resolution))) == 0;
+                         p.steps[i].on = x < 0.45 * (downbeat ? 1.5 : 0.8);
+                         if (p.steps[i].on) p.steps[i].velocity = float(juce::jlimit(0.35, 1.0, 0.55 + x * 0.5));
+                     }
+                     p.euclidMode = false;
+                 });
+             });
+
+    grid.removeFromTop(8);
+
+    // Step buttons.
+    const int n = pattern.length;
+    const int perRow = n > 16 ? 16 : n;
+    const int rows = (n + perRow - 1) / perRow;
+    const int cellW = juce::jmin(56, grid.getWidth() / juce::jmax(1, perRow));
+    const int cellH = juce::jmin(58, (grid.getHeight() - (rows - 1) * 6) / juce::jmax(1, rows));
+    const int playingStep = engine_.playing() ? engine_.trackStep(trackIdx) : -1;
+
+    for (int row = 0; row < rows; ++row) {
+        auto line = grid.removeFromTop(cellH);
+        grid.removeFromTop(6);
+        for (int c = 0; c < perRow; ++c) {
+            const int index = row * perRow + c;
+            if (index >= n) break;
+            auto cell = line.removeFromLeft(cellW).reduced(2);
+            const Step& step = pattern.steps[size_t(index)];
+            const bool on = pattern.stepOn(index);
+            const bool isBeat = (index % juce::jmax(1, pattern.resolution)) == 0;
+            const bool here = index == playingStep;
+            const bool sel = index == selectedStep_;
+
+            const auto f = cell.toFloat();
+            if (here && on) drawGlow(g, f, tint, 0.9f, 5.0f);
+            g.setColour(on ? tint.withAlpha(0.9f) : (isBeat ? colour::ink2.brighter(0.14f) : colour::ink2));
+            g.fillRoundedRectangle(f, 5.0f);
+            if (on) {
+                // Velocity as a fill height, so dynamics are visible at a glance.
+                auto v = f.withTrimmedTop(f.getHeight() * (1.0f - juce::jlimit(0.0f, 1.0f, step.velocity)));
+                g.setColour(juce::Colours::white.withAlpha(0.18f));
+                g.fillRoundedRectangle(v, 4.0f);
+            }
+            g.setColour(sel ? colour::text : (here ? colour::gold : colour::line));
+            g.drawRoundedRectangle(f.reduced(0.5f), 5.0f, sel || here ? 1.8f : 1.0f);
+
+            g.setColour(on ? colour::ink0.withAlpha(0.65f) : colour::dimmer);
+            g.setFont(monoFont(8.0f));
+            g.drawText(juce::String(index + 1), cell.reduced(3).removeFromTop(10),
+                       juce::Justification::topLeft, false);
+
+            if (on && !track->instrument.isDrum) {
+                g.setColour(colour::ink0.withAlpha(0.85f));
+                g.setFont(monoFont(9.5f, true));
+                g.drawText(theory::noteName(theory::degreeToMidi(song_.key, step.degree, step.octave)),
+                           cell.reduced(3), juce::Justification::centred, false);
+            }
+            // Badges for anything that makes this step behave differently.
+            juce::String badge;
+            if (step.ratchet > 1) badge += "x" + juce::String(step.ratchet) + " ";
+            if (step.cond.type != TrigCondition::Type::Always) badge += condLabel(step.cond);
+            if (badge.isNotEmpty()) {
+                g.setColour(on ? colour::ink0.withAlpha(0.8f) : colour::gold);
+                g.setFont(monoFont(7.5f, true));
+                g.drawText(badge, cell.reduced(3), juce::Justification::bottomRight, false);
+            }
+
+            addHit(cell, [this, index, editStep, wasOn = pattern.steps[size_t(index)].on] {
+                const bool inspecting = juce::ModifierKeys::getCurrentModifiers().isShiftDown();
+                if (!inspecting) editStep(index, [wasOn](Step& s) { s.on = !wasOn; });
+                selectedStep_ = index;
+            });
+        }
+    }
+
+    // --- inspector --------------------------------------------------------
+    drawPanel(g, inspector.toFloat(), 12.0f);
+    auto ins = inspector.reduced(14, 10);
+
+    auto insHead = ins.removeFromTop(18);
+    drawCaption(g, insHead.removeFromLeft(200),
+                selectedStep_ >= 0 ? "Step " + juce::String(selectedStep_ + 1) : "Pattern",
+                colour::dimmer);
+    g.setColour(colour::dimmer);
+    g.setFont(uiFont(10.0f));
+    g.drawText("click a step to toggle \xc2\xb7 shift-click to inspect without toggling",
+               insHead, juce::Justification::centredRight, false);
+    ins.removeFromTop(6);
+
+    auto left = ins.removeFromLeft(ins.getWidth() / 2 - 8);
+    ins.removeFromLeft(16);
+
+    // Pattern-level controls, always present.
+    {
+        auto row = left.removeFromTop(62);
+        addKnob(row.removeFromLeft(84), "Length", lin(float(pattern.length), 1.0f, 64.0f),
+                juce::String(pattern.length), tint,
+                [editPattern](float v) {
+                    editPattern([v](Pattern& p) { p.resize(int(std::round(unlin(v, 1.0f, 64.0f)))); });
+                }, false, lin(16.0f, 1.0f, 64.0f));
+
+        const int resTable[5] = { 2, 3, 4, 6, 8 };
+        int resIdx = 2;
+        for (int i = 0; i < 5; ++i) if (resTable[i] == pattern.resolution) resIdx = i;
+        addKnob(row.removeFromLeft(84), "Grid", float(resIdx) / 4.0f,
+                subdivisionName(pattern.resolution), tint,
+                [editPattern, resTable](float v) {
+                    const int i = juce::jlimit(0, 4, int(std::round(v * 4.0f)));
+                    const int r = resTable[i];
+                    editPattern([r](Pattern& p) { p.resolution = r; });
+                }, false, 0.5f);
+
+        if (pattern.euclidMode) {
+            addKnob(row.removeFromLeft(84), "Pulses", lin(float(pattern.euclidPulses), 0.0f, float(pattern.length)),
+                    juce::String(pattern.euclidPulses), colour::fitted,
+                    [editPattern](float v) {
+                        editPattern([v](Pattern& p) {
+                            p.euclidPulses = int(std::round(v * float(p.length))); }); });
+            addKnob(row.removeFromLeft(84), "Rotate",
+                    lin(float(pattern.euclidRotation), 0.0f, float(juce::jmax(1, pattern.length - 1))),
+                    juce::String(pattern.euclidRotation), colour::fitted,
+                    [editPattern](float v) {
+                        editPattern([v](Pattern& p) {
+                            p.euclidRotation = int(std::round(v * float(juce::jmax(1, p.length - 1)))); }); });
+        }
+
+        if (pattern.euclidMode) {
+            g.setColour(colour::dimmer);
+            g.setFont(uiFont(10.0f));
+            g.drawText("E(" + juce::String(pattern.euclidPulses) + "," + juce::String(pattern.length)
+                           + ") spreads the hits as evenly as arithmetic allows. E(3,8) is the tresillo.",
+                       left.removeFromTop(16), juce::Justification::centredLeft, false);
+        }
+    }
+
+    // Step-level controls, only once a step is chosen.
+    if (selectedStep_ >= 0 && selectedStep_ < int(pattern.steps.size())) {
+        const Step& step = pattern.steps[size_t(selectedStep_)];
+        const int si = selectedStep_;
+        auto row = ins.removeFromTop(62);
+
+        addKnob(row.removeFromLeft(76), "Velocity", step.velocity, pct(step.velocity), tint,
+                [editStep, si](float v) { editStep(si, [v](Step& s) { s.velocity = juce::jmax(0.02f, v); }); },
+                false, 0.8f);
+        if (!track->instrument.isDrum) {
+            addKnob(row.removeFromLeft(76), "Degree", lin(float(step.degree), -7.0f, 14.0f),
+                    theory::noteName(theory::degreeToMidi(song_.key, step.degree, step.octave)), tint,
+                    [editStep, si](float v) {
+                        editStep(si, [v](Step& s) { s.degree = int(std::round(unlin(v, -7.0f, 14.0f))); }); },
+                    true, lin(0.0f, -7.0f, 14.0f));
+            addKnob(row.removeFromLeft(76), "Octave", lin(float(step.octave), -3.0f, 3.0f),
+                    (step.octave > 0 ? "+" : "") + juce::String(step.octave), tint,
+                    [editStep, si](float v) {
+                        editStep(si, [v](Step& s) { s.octave = int(std::round(unlin(v, -3.0f, 3.0f))); }); },
+                    true, 0.5f);
+            addKnob(row.removeFromLeft(76), "Length", lin(float(step.length), 1.0f, 16.0f),
+                    juce::String(step.length), tint,
+                    [editStep, si](float v) {
+                        editStep(si, [v](Step& s) { s.length = int(std::round(unlin(v, 1.0f, 16.0f))); }); },
+                    false, 0.0f);
+        }
+        addKnob(row.removeFromLeft(76), "Ratchet", lin(float(step.ratchet), 1.0f, 8.0f),
+                "x" + juce::String(step.ratchet), colour::gold,
+                [editStep, si](float v) {
+                    editStep(si, [v](Step& s) { s.ratchet = int(std::round(unlin(v, 1.0f, 8.0f))); }); },
+                false, 0.0f);
+        addKnob(row.removeFromLeft(76), "Nudge", lin(step.nudge, -0.5f, 0.5f),
+                juce::String(int(step.nudge * 100.0f)) + "%", colour::played,
+                [editStep, si](float v) { editStep(si, [v](Step& s) { s.nudge = unlin(v, -0.5f, 0.5f); }); },
+                true, 0.5f);
+
+        auto condRow = ins.removeFromTop(24);
+        drawCaption(g, condRow.removeFromLeft(74), "Condition", colour::dimmer);
+        for (const auto& preset : condPresets()) {
+            if (condRow.getWidth() < 46) break;
+            const auto cond = preset.cond;
+            drawChip(g, condRow.removeFromLeft(44).reduced(1, 0), preset.label, colour::fitted,
+                     sameCondition(preset.cond, step.cond),
+                     [editStep, si, cond] { editStep(si, [cond](Step& s) { s.cond = cond; }); });
+        }
+
+        ins.removeFromTop(4);
+        auto flagRow = ins.removeFromTop(22);
+        drawChip(g, flagRow.removeFromLeft(84), "ACCENT", colour::gold, step.accent,
+                 [editStep, si, on = step.accent] { editStep(si, [on](Step& s) { s.accent = !on; }); });
+        flagRow.removeFromLeft(8);
+        g.setColour(colour::dimmer);
+        g.setFont(uiFont(10.0f));
+        for (const auto& preset : condPresets())
+            if (sameCondition(preset.cond, step.cond))
+                g.drawText(juce::String("Condition: ") + preset.blurb, flagRow,
+                           juce::Justification::centredLeft, false);
+    } else {
+        g.setColour(colour::dimmer);
+        g.setFont(uiFont(11.5f));
+        g.drawText("Select a step to set its velocity, pitch, ratchet, nudge and trig condition.",
+                   ins.removeFromTop(30), juce::Justification::centredLeft, false);
+    }
 }
 
 // --- mix -------------------------------------------------------------------

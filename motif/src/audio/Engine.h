@@ -129,6 +129,12 @@ private:
         /** 0 at the moment of a duck, rising to 1 as it recovers. */
         float duckPhase = 1.0f;
         int lastStep = -1;
+        /** Retriggers still owed on the current step, and when the next is due. */
+        int ratchetsLeft = 0;
+        int ratchetStep = -1;
+        double ratchetInterval = 0.0;
+        double nextRatchetBeats = 0.0;
+        float ratchetVelocity = 0.0f;
     };
     std::array<TrackRuntime, kMaxTracks> runtime_;
 

@@ -41,7 +41,8 @@ public:
     bool keyPressed(const juce::KeyPress&) override;
 
 private:
-    enum class View { Arrange, Mix, Sound };
+    enum class View { Arrange, Steps, Mix, Sound };
+    static constexpr int kViewCount = 4;
 
     void timerCallback() override;
 
@@ -83,6 +84,7 @@ private:
     void paintHeader(juce::Graphics&);
     void paintTrackRail(juce::Graphics&);
     void paintArrangeView(juce::Graphics&);
+    void paintStepsView(juce::Graphics&);
     void paintMixView(juce::Graphics&);
     void paintSoundView(juce::Graphics&);
     void paintTransportStrip(juce::Graphics&);
@@ -113,7 +115,8 @@ private:
 
     juce::Rectangle<int> headerArea_, railArea_, mainArea_, stripArea_, keyboardArea_;
     juce::Rectangle<int> recButton_, playButton_, keepButton_;
-    std::array<juce::Rectangle<int>, 3> viewTabs_;
+    std::array<juce::Rectangle<int>, kViewCount> viewTabs_;
+    int selectedStep_ = -1;
     std::vector<juce::Rectangle<int>> trackRows_;
     juce::Rectangle<int> strengthSlider_;
     bool draggingStrength_ = false;

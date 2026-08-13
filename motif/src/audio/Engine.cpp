@@ -330,6 +330,19 @@ void Engine::fireStep(int trackIndex, const Track& track, const Pattern& pattern
 
     const float velocity = std::clamp(step.velocity * (step.accent ? 1.25f : 1.0f), 0.0f, 1.3f);
 
+    // Ratchets: the remaining hits are queued and fired by the render loop at
+    // even divisions of this step, so they stay sample-accurate rather than
+    // all landing on the block boundary.
+    const int ratchets = std::clamp(step.ratchet, 1, 8);
+    if (ratchets > 1) {
+        const double stepBeats = 1.0 / double(std::max(1, pattern.resolution));
+        rt.ratchetsLeft = ratchets - 1;
+        rt.ratchetStep = stepIndex;
+        rt.ratchetInterval = stepBeats / double(ratchets);
+        rt.nextRatchetBeats = positionBeatsLocal_ + rt.ratchetInterval;
+        rt.ratchetVelocity = velocity;
+    }
+
     if (track.instrument.isDrum) {
         const int semis = theory::degreeToMidi(song_.key, step.degree, step.octave)
                         - theory::degreeToMidi(song_.key, 0, 0);
@@ -395,10 +408,37 @@ void Engine::render(float* left, float* right, int numSamples) {
                     stepDisplay_[t].store(index, std::memory_order_relaxed);
 
                     ++rt.stepCounter;
-                    // Swing and per-step nudge move the NEXT boundary rather
-                    // than the note, which keeps the grid itself uniform.
+                    // Swing and the upcoming step's own nudge move the next
+                    // boundary rather than the note, which keeps the underlying
+                    // grid uniform and makes both offsets composable.
+                    const int upcoming = int(((rt.stepCounter % pattern->length) + pattern->length)
+                                             % pattern->length);
                     const double swing = theory::swingOffset(int(rt.stepCounter), song_.swing, song_.swingUnit);
-                    rt.nextStepBeats = double(rt.stepCounter) * stepBeats + swing * stepBeats;
+                    const double nudge = double(pattern->steps[size_t(upcoming)].nudge);
+                    rt.nextStepBeats = double(rt.stepCounter) * stepBeats + (swing + nudge) * stepBeats;
+                }
+
+                // Owed retriggers from a ratcheted step.
+                if (rt.ratchetsLeft > 0 && positionBeatsLocal_ >= rt.nextRatchetBeats) {
+                    const int idx = rt.ratchetStep;
+                    if (idx >= 0 && idx < int(pattern->steps.size())) {
+                        const Step& s = pattern->steps[size_t(idx)];
+                        // Taper slightly so a roll reads as one gesture.
+                        const float v = rt.ratchetVelocity * (1.0f - 0.06f * float(std::max(1, s.ratchet)
+                                                                                   - rt.ratchetsLeft));
+                        if (track.instrument.isDrum) {
+                            const int semis = theory::degreeToMidi(song_.key, s.degree, s.octave)
+                                            - theory::degreeToMidi(song_.key, 0, 0);
+                            allocateDrumVoice(int(t))->trigger(track.instrument.drumEngine,
+                                                               track.instrument.drum, v, float(semis));
+                        } else {
+                            allocateSynthVoice(int(t))->start(
+                                theory::degreeToMidi(song_.key, s.degree, s.octave), v,
+                                track.instrument.synth);
+                        }
+                    }
+                    --rt.ratchetsLeft;
+                    rt.nextRatchetBeats += rt.ratchetInterval;
                 }
             }
             positionBeatsLocal_ += beatsPerSample_;
