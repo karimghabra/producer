@@ -383,7 +383,15 @@ export class AudioEngine {
       ch.duckFrom = from;
       ch.duckAmt = a;
 
-      g.cancelScheduledValues(time);
+      // Hold rather than cancel, for the same reason as applyRelease: cancelling
+      // deletes a ramp whose end time is past `time`, wiping out its effect
+      // before `time` too. Only bites when ducks overlap — fast kick patterns,
+      // ratchets, long releases — but that is exactly when it would be heard.
+      if (typeof g.cancelAndHoldAtTime === 'function') {
+        g.cancelAndHoldAtTime(time);
+      } else {
+        g.cancelScheduledValues(time);
+      }
       g.setValueAtTime(from, time);
       g.linearRampToValueAtTime(1 - a, time + Math.max(0.0005, atk));
       const t0 = time + atk;

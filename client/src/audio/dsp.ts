@@ -375,11 +375,40 @@ export function percEnv(
   decay: number,
   attack = 0.001,
 ): number {
+  const a = Math.max(0.0002, attack);
+  const p = Math.max(SILENCE, peak);
   param.cancelScheduledValues(t0);
-  param.setValueAtTime(SILENCE, t0);
-  param.linearRampToValueAtTime(Math.max(SILENCE, peak), t0 + attack);
-  param.exponentialRampToValueAtTime(SILENCE, t0 + attack + Math.max(0.005, decay));
-  return t0 + attack + decay;
+  // Raised cosine, as a real curve rather than line segments.
+  //
+  // A straight ramp stops dead at the top, and that corner is a step in the
+  // slope: on a kick, ~410/s against a decay slope of -16/s, roughly 250 times
+  // the drum's own curvature. A broadband tick sitting on a low, loud body,
+  // which is what a clicking kick actually is.
+  //
+  // Percussion envelopes are fire-and-forget — nothing cancels them part way —
+  // so setValueCurveAtTime is safe here where the synth envelope has to stay
+  // as segments a release can truncate. Points land under a sample apart, so
+  // the residual corner is bounded by the sample rate rather than by us.
+  param.setValueCurveAtTime(raisedCosine(p), t0, a);
+  param.exponentialRampToValueAtTime(SILENCE, t0 + a + Math.max(0.005, decay));
+  return t0 + a + decay;
+}
+
+const cosineCache = new Map<number, Curve>();
+
+/** Rising raised-cosine from 0 to `peak`, cached per peak level. */
+function raisedCosine(peak: number, points = 128): Curve {
+  const key = Math.round(peak * 4096);
+  const hit = cosineCache.get(key);
+  if (hit) return hit;
+  const curve = new Float32Array(points);
+  for (let i = 0; i < points; i++) {
+    curve[i] = (peak * (1 - Math.cos((Math.PI * i) / (points - 1)))) / 2;
+  }
+  // Peaks are continuous, so bound the cache rather than let it grow forever.
+  if (cosineCache.size > 512) cosineCache.clear();
+  cosineCache.set(key, curve);
+  return curve;
 }
 
 /**
