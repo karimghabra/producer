@@ -3,7 +3,9 @@
 // Synthesises performances with known ground truth, plays them badly on
 // purpose, and checks the inferred grid matches what was intended.
 
+#include "audio/Fx.h"
 #include "music/Quantizer.h"
+#include "music/Theory.h"
 
 #include <cmath>
 #include <cstdio>
@@ -197,6 +199,91 @@ int main() {
         std::vector<RawNote> one{ { 0.0, 0.2, 60, 0.8f } };
         const auto f1 = inferGrid(one);
         check(f1.fellBack, "single note admits it cannot tell", "");
+    }
+
+    // --- master effects ----------------------------------------------------
+    std::printf("\nMaster effects:\n");
+    {
+        constexpr double SR = 48000.0;
+        constexpr int N = int(SR * 3.0);
+
+        // Reverb: an impulse in should still be ringing well after it stops.
+        motif::fx::Reverb verb;
+        verb.prepare(SR);
+        verb.setParams(0.62f, 0.45f, 0.9f);
+        std::vector<float> tail(size_t(N), 0.0f);
+        for (int i = 0; i < N; ++i) {
+            const float in = i == 0 ? 1.0f : 0.0f;
+            float l = 0.0f, r = 0.0f;
+            verb.process(in, in, l, r);
+            tail[size_t(i)] = std::abs(l);
+        }
+        auto energyAt = [&](double sec) {
+            const int start = int(sec * SR);
+            float e = 0.0f;
+            for (int i = start; i < std::min(N, start + int(SR * 0.05)); ++i) e = std::max(e, tail[size_t(i)]);
+            return e;
+        };
+        const float e100 = energyAt(0.1), e800 = energyAt(0.8), e2500 = energyAt(2.5);
+        check(e100 > 1e-5f, "reverb produces a tail", "peak at 100ms " + std::to_string(e100));
+        check(e800 < e100 && e800 > 0.0f, "the tail decays rather than sustaining",
+              "800ms/100ms = " + std::to_string(e800 / std::max(1e-9f, e100)));
+        check(e2500 < e800, "and keeps decaying", "2.5s " + std::to_string(e2500));
+
+        // Delay: an impulse should come back at the delay time, not before.
+        motif::fx::PingPongDelay dly;
+        dly.prepare(SR);
+        dly.setParams(120.0, 0.5, 0.5f, 8000.0f, 0.8f);   // 0.25s at 120bpm
+        std::vector<float> out(size_t(SR), 0.0f);
+        for (int i = 0; i < int(SR); ++i) {
+            const float in = i == 0 ? 1.0f : 0.0f;
+            float l = 0.0f, r = 0.0f;
+            dly.process(in, in, l, r);
+            out[size_t(i)] = std::abs(l) + std::abs(r);
+        }
+        int firstEcho = -1;
+        for (int i = 20; i < int(SR); ++i) if (out[size_t(i)] > 0.05f) { firstEcho = i; break; }
+        const double echoMs = firstEcho > 0 ? double(firstEcho) / SR * 1000.0 : -1.0;
+        check(firstEcho > 0 && std::abs(echoMs - 250.0) < 30.0,
+              "delay repeats at the right time", "first echo " + std::to_string(int(echoMs)) + "ms, want 250ms");
+
+        // Limiter: nothing gets past the ceiling.
+        motif::fx::Limiter lim;
+        lim.prepare(SR);
+        lim.setThreshold(0.89f);
+        float worst = 0.0f;
+        for (int i = 0; i < int(SR); ++i) {
+            const float in = float(2.5 * std::sin(double(i) * 0.05));   // way over full scale
+            float l = 0.0f, r = 0.0f;
+            lim.process(in, in, l, r);
+            worst = std::max(worst, std::abs(l));
+        }
+        check(worst <= 0.92f, "limiter holds the ceiling", "worst " + std::to_string(worst));
+    }
+
+    // --- ported theory -----------------------------------------------------
+    std::printf("\nPorted from the browser build:\n");
+    {
+        auto show = [](const std::vector<bool>& v) {
+            std::string s;
+            for (bool b : v) s += b ? 'x' : '.';
+            return s;
+        };
+        check(show(motif::theory::euclid(3, 8)) == "x..x..x.", "E(3,8) is the tresillo",
+              show(motif::theory::euclid(3, 8)));
+        check(show(motif::theory::euclid(5, 8)) == "x.xx.xx.", "E(5,8) is the cinquillo",
+              show(motif::theory::euclid(5, 8)));
+        check(motif::theory::polymeterCycle({ 16, 12 }) == 48, "16 against 12 cycles in 48",
+              std::to_string(motif::theory::polymeterCycle({ 16, 12 })));
+        const motif::theory::Key aMinor{ 9, motif::theory::Scale::Minor };
+        check(motif::theory::degreeToMidi(aMinor, 0) == 69, "degree 0 of A minor is A4",
+              std::to_string(motif::theory::degreeToMidi(aMinor, 0)));
+        const auto chord = motif::theory::buildChord(aMinor, 0, 3);
+        check(chord.size() == 3 && chord[1] - chord[0] == 3,
+              "the key picks the chord quality (A minor triad)",
+              std::to_string(chord[1] - chord[0]) + " semitones to the third");
+        check(std::abs(motif::theory::swingOffset(1, 1.0, 2) - (1.0 / 3.0)) < 1e-9,
+              "full swing lands exactly on the triplet", "");
     }
 
     std::printf("\n%d checks, %d failures\n\n", checks, failures);

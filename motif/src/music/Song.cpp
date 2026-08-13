@@ -209,11 +209,16 @@ Song makeDefaultSong() {
             fromDegrees("Stabs", { R, R, 4, R, R, R, 4, R, R, R, 5, R, R, R, 4, R }),
         };
         t.mixer.gain = 0.6f;
-        t.mixer.reverbSend = 0.3f;
+        t.mixer.reverbSend = 0.32f;
+        t.mixer.delaySend = 0.26f;
         t.mixer.duck = 0.5f;
         t.armed = true;                 // what your keyboard plays by default
         song.tracks.push_back(std::move(t));
     }
+
+    // A little space on the percussion, so the kit is not bone dry.
+    song.tracks[1].mixer.reverbSend = 0.26f;   // clap
+    song.tracks[3].mixer.reverbSend = 0.20f;   // snare
 
     song.sidechainSource = 0;           // the kick
     return song;

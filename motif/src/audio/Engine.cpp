@@ -118,6 +118,9 @@ void Engine::prepare(double sampleRate, int /*blockSize*/) {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
     for (auto& s : synths_) s.voice.prepare(sampleRate_);
     for (auto& d : drums_) d.voice.prepare(sampleRate_);
+    reverb_.prepare(sampleRate_);
+    delay_.prepare(sampleRate_);
+    limiter_.prepare(sampleRate_);
     sampleClock_ = 0;
     positionBeatsLocal_ = 0.0;
     if (song_.tracks.empty()) song_ = makeDefaultSong();
@@ -359,8 +362,15 @@ void Engine::render(float* left, float* right, int numSamples) {
     const bool isPlaying = playing_.load(std::memory_order_relaxed);
     const bool anySolo = song_.anySolo();
     beatsPerSample_ = song_.bpm / 60.0 / sampleRate_;
-    const float duckRelease = std::max(0.02f, duckRelease_);
+    const MasterFx& fxParams = song_.master;
+    const float duckRelease = std::max(0.02f, fxParams.sidechainRelease);
     const float duckStep = float(1.0 / (double(duckRelease) * sampleRate_));
+    duckCurve_ = fxParams.sidechainCurve;
+
+    reverb_.setParams(fxParams.reverb.size, fxParams.reverb.damp, fxParams.reverb.width);
+    delay_.setParams(song_.bpm, double(fxParams.delay.beats), fxParams.delay.feedback,
+                     fxParams.delay.tone, fxParams.delay.pingpong);
+    limiter_.setThreshold(fxParams.limiter ? 0.89f : 1.0f);
 
     std::array<float, kMaxTracks> trackL{}, trackR{};
 
@@ -408,8 +418,11 @@ void Engine::render(float* left, float* right, int numSamples) {
             d.voice.render(trackL[size_t(d.track)], trackR[size_t(d.track)]);
         }
 
-        // --- mixer ---------------------------------------------------------
-        float mixL = 0.0f, mixR = 0.0f;
+        // --- mixer and sends -----------------------------------------------
+        float dryL = 0.0f, dryR = 0.0f;
+        float sendReverbL = 0.0f, sendReverbR = 0.0f;
+        float sendDelayL = 0.0f, sendDelayR = 0.0f;
+
         for (size_t t = 0; t < trackCount; ++t) {
             const Mixer& m = song_.tracks[t].mixer;
             const bool audible = !m.mute && (!anySolo || m.solo);
@@ -423,9 +436,35 @@ void Engine::render(float* left, float* right, int numSamples) {
 
             const float g = m.gain * duck;
             const float angle = (std::clamp(m.pan, -1.0f, 1.0f) + 1.0f) * 0.25f * float(dsp::kPi);
-            mixL += trackL[t] * g * std::cos(angle);
-            mixR += trackR[t] * g * std::sin(angle);
+            const float l = trackL[t] * g * std::cos(angle);
+            const float r = trackR[t] * g * std::sin(angle);
+
+            dryL += l;
+            dryR += r;
+            // Sends are post-fader, so pulling a track down takes its effects
+            // with it rather than leaving a ghost in the reverb.
+            sendReverbL += l * m.reverbSend;
+            sendReverbR += r * m.reverbSend;
+            sendDelayL += l * m.delaySend;
+            sendDelayR += r * m.delaySend;
         }
+
+        float revL = 0.0f, revR = 0.0f, dlyL = 0.0f, dlyR = 0.0f;
+        reverb_.process(sendReverbL, sendReverbR, revL, revR);
+        delay_.process(sendDelayL, sendDelayR, dlyL, dlyR);
+
+        float mixL = dryL + revL * fxParams.reverb.mix + dlyL * fxParams.delay.mix;
+        float mixR = dryR + revR * fxParams.reverb.mix + dlyR * fxParams.delay.mix;
+
+        if (fxParams.drive > 0.001f) {
+            mixL = dsp::saturate(mixL, fxParams.drive);
+            mixR = dsp::saturate(mixR, fxParams.drive);
+        }
+
+        mixL *= fxParams.gain;
+        mixR *= fxParams.gain;
+
+        limiter_.process(mixL, mixR, mixL, mixR);
 
         // Last line of defence: the output can never leave [-1, 1] however many
         // voices land on the same sample.
@@ -439,6 +478,7 @@ void Engine::render(float* left, float* right, int numSamples) {
     float peak = 0.0f;
     for (int i = 0; i < numSamples; ++i) peak = std::max(peak, std::abs(left[i]));
     peak_.store(peak, std::memory_order_relaxed);
+    reduction_.store(limiter_.reduction(), std::memory_order_relaxed);
 }
 
 } // namespace motif

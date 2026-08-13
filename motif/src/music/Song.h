@@ -128,6 +128,32 @@ struct Track {
     }
 };
 
+/** The master bus. */
+struct MasterFx {
+    float gain = 0.85f;
+    float drive = 0.10f;
+    bool limiter = true;
+
+    struct Reverb {
+        float size = 0.62f;     // decay length
+        float damp = 0.45f;     // how fast the treble dies
+        float width = 0.90f;
+        float mix = 0.85f;      // return level
+    } reverb;
+
+    struct Delay {
+        float beats = 0.75f;    // dotted eighth by default: three against four
+        float feedback = 0.40f;
+        float tone = 3200.0f;   // feedback-path lowpass
+        float pingpong = 0.80f;
+        float mix = 0.85f;
+    } delay;
+
+    /** Sidechain recovery. Above 1 the level hangs low then snaps back. */
+    float sidechainRelease = 0.24f;
+    float sidechainCurve = 1.8f;
+};
+
 struct Song {
     std::string name = "Untitled";
     double bpm = 124.0;
@@ -136,6 +162,7 @@ struct Song {
     double humanize = 0.0;   // milliseconds of stable jitter
     theory::Key key;
     std::vector<Track> tracks;
+    MasterFx master;
     int beatsPerBar = 4;
     int barsPerLoop = 2;
     /** Index of the track whose hits drive the sidechain. -1 for none. */

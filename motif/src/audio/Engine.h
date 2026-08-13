@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "audio/Drums.h"
+#include "audio/Fx.h"
 #include "dsp/Dsp.h"
 #include "music/Quantizer.h"
 #include "music/Song.h"
@@ -104,6 +105,8 @@ public:
     int trackStep(int trackIndex) const;
 
     float outputPeak() const { return peak_.load(std::memory_order_relaxed); }
+    /** How hard the limiter is working, 0..1, for the meter. */
+    float limiterReduction() const { return reduction_.load(std::memory_order_relaxed); }
     int activeVoiceCount() const;
 
 private:
@@ -142,7 +145,12 @@ private:
     std::atomic<bool> recording_{ false };
     std::atomic<double> positionBeats_{ 0.0 };
     std::atomic<float> peak_{ 0.0f };
+    std::atomic<float> reduction_{ 0.0f };
     std::array<std::atomic<int>, kMaxTracks> stepDisplay_{};
+
+    fx::Reverb reverb_;
+    fx::PingPongDelay delay_;
+    fx::Limiter limiter_;
 
     // Recording.
     uint64_t recordStartSample_ = 0;
