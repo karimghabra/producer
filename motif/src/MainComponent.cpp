@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 
+#include "music/Presets.h"
 #include "ui/Theme.h"
 
 using namespace motif::ui;
@@ -1099,7 +1100,63 @@ void MainComponent::paintSoundView(juce::Graphics& g) {
         song_ = engine_.song();
     };
 
-    // Engine selector.
+    // --- presets ----------------------------------------------------------
+    // First, because finding a sound by ear beats reasoning about knobs you do
+    // not yet have a feel for. Clicking one loads it and plays it.
+    auto presetHead = area.removeFromTop(16);
+    drawCaption(g, presetHead.removeFromLeft(70), "Presets", colour::dimmer);
+    g.setColour(colour::dimmer);
+    g.setFont(uiFont(9.5f));
+    g.drawText("click to load and hear \xc2\xb7 then turn knobs to taste", presetHead,
+               juce::Justification::centredLeft, false);
+    area.removeFromTop(4);
+
+    auto presetRows = area.removeFromTop(track->instrument.isDrum ? 52 : 30);
+    {
+        auto line = presetRows.removeFromTop(24);
+        int placed = 0;
+        auto audition = [this, idx] {
+            engine_.auditionTrack(idx, 60, 0.95f);
+        };
+        if (track->instrument.isDrum) {
+            for (const auto& preset : drumPresets()) {
+                if (line.getWidth() < 90) {
+                    if (presetRows.getHeight() < 24) break;
+                    line = presetRows.removeFromTop(24);
+                }
+                const bool on = track->instrument.drumEngine == preset.engine
+                             && std::abs(track->instrument.drum.tune - preset.params.tune) < 0.5f;
+                const auto* p = &preset;
+                drawChip(g, line.removeFromLeft(88).reduced(2, 1), preset.name, tint, on,
+                         [this, idx, p, audition] {
+                             engine_.editSong([idx, p](Song& s) {
+                                 if (idx < int(s.tracks.size())) applyDrumPreset(s.tracks[size_t(idx)], *p); });
+                             song_ = engine_.song();
+                             audition();
+                         });
+                ++placed;
+            }
+        } else {
+            for (const auto& preset : synthPresets()) {
+                if (line.getWidth() < 100) break;
+                const bool on = track->instrument.synth.engine == preset.patch.engine
+                             && std::abs(track->instrument.synth.cutoff - preset.patch.cutoff) < 1.0f;
+                const auto* p = &preset;
+                drawChip(g, line.removeFromLeft(98).reduced(2, 1), preset.name, tint, on,
+                         [this, idx, p, audition] {
+                             engine_.editSong([idx, p](Song& s) {
+                                 if (idx < int(s.tracks.size())) applySynthPreset(s.tracks[size_t(idx)], *p); });
+                             song_ = engine_.song();
+                             audition();
+                         });
+                ++placed;
+            }
+        }
+        juce::ignoreUnused(placed);
+    }
+    area.removeFromTop(8);
+
+    // --- engine -----------------------------------------------------------
     auto engines = area.removeFromTop(26);
     drawCaption(g, engines.removeFromLeft(70), "Engine", colour::dimmer);
     if (track->instrument.isDrum) {
@@ -1113,16 +1170,14 @@ void MainComponent::paintSoundView(juce::Graphics& g) {
                      });
         }
     } else {
-        const char* waves[4] = { "Saw", "Square", "Triangle", "Sine" };
-        const dsp::Wave ws[4] = { dsp::Wave::Saw, dsp::Wave::Square, dsp::Wave::Triangle, dsp::Wave::Sine };
-        for (int e = 0; e < 4; ++e) {
-            const auto w = ws[e];
-            drawChip(g, engines.removeFromLeft(84).reduced(2, 0), waves[e], tint,
-                     track->instrument.synth.wave == w,
-                     [setSynth, w] { setSynth([w](Patch& p) { p.wave = w; }); });
+        for (int e = 0; e < 6; ++e) {
+            const auto se = SynthEngine(e);
+            drawChip(g, engines.removeFromLeft(88).reduced(2, 0), synthEngineName(se), tint,
+                     track->instrument.synth.engine == se,
+                     [setSynth, se] { setSynth([se](Patch& p) { p.engine = se; }); });
         }
     }
-    area.removeFromTop(12);
+    area.removeFromTop(10);
 
     const int kh = 66;
     auto row1 = area.removeFromTop(kh);
@@ -1161,10 +1216,20 @@ void MainComponent::paintSoundView(juce::Graphics& g) {
                    row3.removeFromTop(20), juce::Justification::centredLeft, false);
     } else {
         const auto& p = track->instrument.synth;
-        addKnob(place(row1, 6), "Unison", lin(float(p.unison), 1.0f, 9.0f), juce::String(p.unison), tint,
-                [setSynth](float v) { setSynth([v](Patch& q) { q.unison = int(std::round(unlin(v, 1.0f, 9.0f))); }); });
-        addKnob(place(row1, 5), "Detune", p.detune, pct(p.detune), tint,
-                [setSynth](float v) { setSynth([v](Patch& q) { q.detune = v; }); });
+        const bool isFM = p.engine == SynthEngine::FM;
+        if (isFM) {
+            // Whole-number ratios sound musical; fractions sound like bells.
+            addKnob(place(row1, 6), "Ratio", lin(p.fmRatio, 0.25f, 16.0f),
+                    juce::String(p.fmRatio, 2) + ":1", tint,
+                    [setSynth](float v) { setSynth([v](Patch& q) { q.fmRatio = unlin(v, 0.25f, 16.0f); }); });
+            addKnob(place(row1, 5), "Index", lin(p.fmIndex, 0.0f, 16.0f), juce::String(p.fmIndex, 1), tint,
+                    [setSynth](float v) { setSynth([v](Patch& q) { q.fmIndex = unlin(v, 0.0f, 16.0f); }); });
+        } else {
+            addKnob(place(row1, 6), "Unison", lin(float(p.unison), 1.0f, 9.0f), juce::String(p.unison), tint,
+                    [setSynth](float v) { setSynth([v](Patch& q) { q.unison = int(std::round(unlin(v, 1.0f, 9.0f))); }); });
+            addKnob(place(row1, 5), "Detune", p.detune, pct(p.detune), tint,
+                    [setSynth](float v) { setSynth([v](Patch& q) { q.detune = v; }); });
+        }
         addKnob(place(row1, 4), "Spread", p.spread, pct(p.spread), tint,
                 [setSynth](float v) { setSynth([v](Patch& q) { q.spread = v; }); });
         addKnob(place(row1, 3), "Octave", lin(float(p.octave), -3.0f, 3.0f),

@@ -45,7 +45,9 @@ public:
 private:
     std::array<dsp::Oscillator, kMaxUnison> oscs_;
     std::array<float, kMaxUnison> panL_{}, panR_{};
+    std::array<double, kMaxUnison> baseHz_{};
     dsp::Oscillator subOsc_;
+    dsp::Oscillator modOsc_;            // FM modulator
     dsp::Envelope amp_, filtEnv_;
     dsp::SvFilter filterL_, filterR_;
 
@@ -54,6 +56,7 @@ private:
     float velocity_ = 0.8f;
     int voices_ = 1;
     float baseCutoff_ = 1000.0f;
+    double carrierHz_ = 440.0;
     uint64_t stamp_ = 0;
 };
 

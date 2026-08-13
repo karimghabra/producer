@@ -31,18 +31,35 @@ void Voice::prepare(double sampleRate) {
 void Voice::start(int midiNote, float velocity, const Patch& patch) {
     note_ = midiNote;
     velocity_ = dsp::clampf(velocity, 0.0f, 1.4f);
-    voices_ = std::clamp(patch.unison, 1, kMaxUnison);
+
+    // How many oscillators an engine actually wants. Sub and FM are single
+    // carriers by definition; a Reese is the beating of a small number of
+    // detuned saws and stops being one if you pile on more.
+    switch (patch.engine) {
+        case SynthEngine::Sub:
+        case SynthEngine::FM:    voices_ = 1; break;
+        case SynthEngine::Reese: voices_ = std::clamp(patch.unison, 2, 5); break;
+        default:                 voices_ = std::clamp(patch.unison, 1, kMaxUnison); break;
+    }
 
     const double base = double(midiNote + patch.octave * 12);
     const double hz = midiToHz(base);
+    carrierHz_ = hz;
 
     // The JP-8000 spacing, resampled to whatever voice count is in use. Even
     // spacing sounds like several thin voices; this sounds like one thick one.
-    const auto cents = theory::unisonCents(voices_, double(patch.detune));
+    // A Reese wants a fraction of that depth — its character is a slow beat,
+    // not a wide stack.
+    const double detune = patch.engine == SynthEngine::Reese
+        ? double(patch.detune) * 0.35 : double(patch.detune);
+    const auto cents = theory::unisonCents(voices_, detune);
 
     for (int i = 0; i < voices_; ++i) {
-        oscs_[size_t(i)].setWave(patch.wave);
-        oscs_[size_t(i)].setFrequency(hz * std::pow(2.0, cents[size_t(i)] / 1200.0));
+        oscs_[size_t(i)].setWave(patch.engine == SynthEngine::Sub
+                                     || patch.engine == SynthEngine::FM
+                                 ? dsp::Wave::Sine : patch.wave);
+        baseHz_[size_t(i)] = hz * std::pow(2.0, cents[size_t(i)] / 1200.0);
+        oscs_[size_t(i)].setFrequency(baseHz_[size_t(i)]);
         // Spread the start phases. Identical phases would sum into one loud
         // spike on every note and waste the stack for its first cycle.
         oscs_[size_t(i)].resetPhase(std::fmod(double(i) * 0.137 + double(midiNote % 7) * 0.019, 1.0));
@@ -57,6 +74,10 @@ void Voice::start(int midiNote, float velocity, const Patch& patch) {
 
     subOsc_.setFrequency(hz * 0.5);
     subOsc_.resetPhase(0.0);
+
+    modOsc_.setWave(dsp::Wave::Sine);
+    modOsc_.setFrequency(hz * double(std::clamp(patch.fmRatio, 0.25f, 24.0f)));
+    modOsc_.resetPhase(0.0);
 
     baseCutoff_ = dsp::clampf(patch.cutoff * std::pow(2.0f, patch.keyTrack * float(base - 60.0) / 12.0f),
                               30.0f, 18000.0f);
@@ -85,6 +106,16 @@ void Voice::render(float& outL, float& outR, const Patch& patch) {
                                      30.0f, float(sampleRate_ * 0.45));
     filterL_.set(cutoff, patch.resonance);
     filterR_.set(cutoff, patch.resonance);
+
+    // Frequency modulation, if this engine uses it. The index is expressed in
+    // multiples of the carrier so the timbre stays put as you play up and down
+    // the keyboard instead of getting brighter with pitch, and the filter
+    // envelope doubles as the index envelope — which is what makes an FM bass
+    // bite at the start and settle after.
+    if (patch.engine == SynthEngine::FM) {
+        const double deviation = carrierHz_ * double(patch.fmIndex) * double(envVal);
+        oscs_[0].setFrequency(carrierHz_ + double(modOsc_.next()) * deviation);
+    }
 
     float l = 0.0f, r = 0.0f;
     for (int i = 0; i < voices_; ++i) {

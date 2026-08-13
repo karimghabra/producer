@@ -3,15 +3,21 @@
 // Synthesises performances with known ground truth, plays them badly on
 // purpose, and checks the inferred grid matches what was intended.
 
+#include "audio/Engine.h"
 #include "audio/Fx.h"
+#include "music/Presets.h"
 #include "music/Quantizer.h"
 #include "music/Theory.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
+
+template <typename T> void juce_ignore(const T&) {}
 
 using namespace motif;
 
@@ -284,6 +290,75 @@ int main() {
               std::to_string(chord[1] - chord[0]) + " semitones to the third");
         check(std::abs(motif::theory::swingOffset(1, 1.0, 2) - (1.0 / 3.0)) < 1e-9,
               "full swing lands exactly on the triplet", "");
+    }
+
+    // --- instruments -------------------------------------------------------
+    std::printf("\nInstruments (rendered, not assumed):\n");
+    {
+        constexpr double SR = 48000.0;
+
+        // Zero-crossing rate is a cheap brightness proxy: enough to tell a sub
+        // from a supersaw without an FFT.
+        auto analyse = [](const std::vector<float>& buf) {
+            float peak = 0.0f;
+            int crossings = 0;
+            for (size_t i = 1; i < buf.size(); ++i) {
+                peak = std::max(peak, std::abs(buf[i]));
+                if ((buf[i - 1] < 0.0f) != (buf[i] < 0.0f)) ++crossings;
+            }
+            return std::pair<float, int>{ peak, crossings };
+        };
+
+        int clipping = 0, silent = 0;
+        std::vector<int> brightness;
+
+        for (const auto& preset : motif::synthPresets()) {
+            motif::Voice v;
+            v.prepare(SR);
+            v.start(60, 0.9f, preset.patch);
+            std::vector<float> buf(size_t(SR * 0.5), 0.0f);
+            for (size_t i = 0; i < buf.size(); ++i) {
+                float l = 0.0f, r = 0.0f;
+                v.render(l, r, preset.patch);
+                buf[i] = l;
+            }
+            const auto [peak, cross] = analyse(buf);
+            if (peak >= 1.0f) ++clipping;
+            if (peak < 0.005f) { ++silent; std::printf("       (silent: %s)\n", preset.name); }
+            brightness.push_back(cross);
+        }
+
+        check(silent == 0, "every synth preset makes a sound",
+              std::to_string(motif::synthPresets().size()) + " presets");
+        check(clipping == 0, "no synth preset clips on its own", "");
+
+        // The engines must be genuinely different, not differently labelled.
+        auto mm = std::minmax_element(brightness.begin(), brightness.end());
+        check(*mm.second > *mm.first * 4, "the engines differ in character",
+              "brightness spread " + std::to_string(*mm.first) + " to " + std::to_string(*mm.second));
+
+        int drumClipping = 0, drumSilent = 0;
+        for (const auto& preset : motif::drumPresets()) {
+            motif::DrumVoice d;
+            d.prepare(SR);
+            d.trigger(preset.engine, preset.params, 1.0f, 0.0f);
+            std::vector<float> buf(size_t(SR * 2.0), 0.0f);
+            for (size_t i = 0; i < buf.size(); ++i) {
+                float l = 0.0f, r = 0.0f;
+                d.render(l, r);
+                buf[i] = l;
+            }
+            const auto [peak, cross] = analyse(buf);
+            juce_ignore(cross);
+            if (peak >= 1.0f) {
+                ++drumClipping;
+                std::printf("       (clips: %-14s peak %.3f)\n", preset.name, peak);
+            }
+            if (peak < 0.005f) { ++drumSilent; std::printf("       (silent: %s)\n", preset.name); }
+        }
+        check(drumSilent == 0, "every drum preset makes a sound",
+              std::to_string(motif::drumPresets().size()) + " presets");
+        check(drumClipping == 0, "no drum preset clips on its own", "");
     }
 
     std::printf("\n%d checks, %d failures\n\n", checks, failures);

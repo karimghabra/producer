@@ -240,6 +240,18 @@ void DrumVoice::render(float& outL, float& outR) {
         }
     }
 
+    // Bound the voice at its own output.
+    //
+    // Headroom on the envelope is not enough, and fuzzing the earlier build's
+    // parameter space is what established why: a voice's body and its transient
+    // are parallel paths that can align, saturation normalises whatever it is
+    // given back toward full scale, and a resonant filter adds gain on top of
+    // both. Some corner of the parameter space always exceeds full scale. Five
+    // presets here did — Tech Thump at 1.24, Hardstyle at 1.22 — before this.
+    //
+    // Below the knee this is a straight wire, so ordinary hits are untouched.
+    sample = dsp::softClip(sample);
+
     outL += sample;
     outR += sample;
 }

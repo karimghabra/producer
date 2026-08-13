@@ -18,14 +18,40 @@
 
 namespace motif {
 
+/**
+ * Synthesis method. Each is a different arrangement of the same primitives
+ * rather than a different codebase — what changes is how many oscillators run,
+ * whether one modulates another, and what the envelopes are shaped for.
+ */
+enum class SynthEngine { Supersaw, Reese, FM, Sub, Pluck, Pad };
+
+inline const char* synthEngineName(SynthEngine e) {
+    switch (e) {
+        case SynthEngine::Supersaw: return "Supersaw";
+        case SynthEngine::Reese:    return "Reese";
+        case SynthEngine::FM:       return "FM";
+        case SynthEngine::Sub:      return "Sub";
+        case SynthEngine::Pluck:    return "Pluck";
+        case SynthEngine::Pad:      return "Pad";
+    }
+    return "Synth";
+}
+
 /** A synth sound. */
 struct Patch {
+    SynthEngine engine = SynthEngine::Supersaw;
     dsp::Wave wave = dsp::Wave::Saw;
     int unison = 5;
     float detune = 0.30f;
     float spread = 0.70f;
     int octave = 0;
     float sub = 0.25f;
+
+    /** FM: modulator pitch as a multiple of the carrier. Whole numbers sound
+     *  musical; fractions sound like bells and metal. */
+    float fmRatio = 2.0f;
+    /** Peak deviation in multiples of the carrier frequency. */
+    float fmIndex = 3.0f;
 
     float cutoff = 2200.0f;
     float resonance = 3.0f;
