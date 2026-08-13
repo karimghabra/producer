@@ -40,6 +40,7 @@ export function MapEditor() {
   const selectCell = useStore((s) => s.selectCell);
   const updateCell = useStore((s) => s.updateCell);
   const clearCell = useStore((s) => s.clearCell);
+  const resetKeyMap = useStore((s) => s.resetKeyMap);
 
   const cells = project.keymap.layers[layer] ?? [];
   const cell = selectedCell !== null ? cells[selectedCell] : null;
@@ -90,6 +91,17 @@ export function MapEditor() {
           </div>
           <div className="grow" />
           <span className="hint">Click a key below to edit what it does</span>
+          <button
+            className="chip-btn"
+            onClick={() => {
+              if (confirm(`Reset the "${project.keymap.layerNames[layer]}" layer to defaults? Your assignments on this layer will be replaced.`)) {
+                resetKeyMap(layer);
+              }
+            }}
+            title="Rebuild this layer from the current tracks and scenes"
+          >
+            Reset layer
+          </button>
         </div>
         <div className="panel-body">
           <div className="pad-grid">

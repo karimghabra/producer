@@ -53,6 +53,11 @@ export function TrackRail() {
                 <span>{pattern?.length ?? 0}</span>
                 {pattern?.mode === 'euclid' && <span className="lit">E</span>}
                 {!track.seqEnabled && <span style={{ color: 'var(--hot)' }}>OFF</span>}
+                {track.queuedPattern !== null && (
+                  <span style={{ color: 'var(--warm)' }} title="Queued for the next bar">
+                    →{track.queuedPattern < 0 ? 'STOP' : track.patterns[track.queuedPattern]?.name}
+                  </span>
+                )}
               </div>
             </div>
             <div className="track-btns" onClick={(e) => e.stopPropagation()}>

@@ -123,9 +123,17 @@ export function StepEditor() {
             {track.patterns.map((p, i) => (
               <button
                 key={p.id}
-                className={`slot ${i === patternIndex ? 'on' : ''}`}
+                className={[
+                  'slot',
+                  i === patternIndex ? 'on' : '',
+                  track.queuedPattern === i ? 'queued' : '',
+                ].filter(Boolean).join(' ')}
                 onClick={() => setActivePattern(track.id, i)}
-                title={`${p.name} · ${p.length} steps`}
+                title={
+                  track.queuedPattern === i
+                    ? `${p.name} — queued, starts at the next bar`
+                    : `${p.name} · ${p.length} steps`
+                }
               >
                 {p.name}
               </button>

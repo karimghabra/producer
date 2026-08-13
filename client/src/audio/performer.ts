@@ -39,8 +39,13 @@ export interface PerformerCallbacks {
 }
 
 export type PerformerAction =
+  /** A launch is pending at the next boundary — show it as queued. */
+  | { type: 'queuePattern'; trackId: string; patternIndex: number }
+  | { type: 'queueScene'; sceneId: string }
+  /** The boundary arrived; apply it. */
   | { type: 'launchPattern'; trackId: string; patternIndex: number }
   | { type: 'launchScene'; sceneId: string }
+  | { type: 'setTrackEnabled'; trackId: string; enabled: boolean }
   | { type: 'toggleRecord'; trackId: string };
 
 export class Performer {
@@ -204,6 +209,13 @@ export class Performer {
 
       case 'pattern': {
         if (!cell.trackId) return;
+        // Mark it queued straight away. A bar-quantized launch can sit waiting
+        // for nearly two seconds, and without this the key press looks ignored.
+        if (this.transport.isPlaying && cell.quantize !== 'off') {
+          this.cb.dispatch({
+            type: 'queuePattern', trackId: cell.trackId, patternIndex: cell.patternIndex,
+          });
+        }
         this.transport.schedule(cell.quantize, () => {
           this.cb.dispatch({
             type: 'launchPattern', trackId: cell.trackId!, patternIndex: cell.patternIndex,
@@ -214,6 +226,9 @@ export class Performer {
 
       case 'scene': {
         if (!cell.sceneId) return;
+        if (this.transport.isPlaying && cell.quantize !== 'off') {
+          this.cb.dispatch({ type: 'queueScene', sceneId: cell.sceneId });
+        }
         this.transport.schedule(cell.quantize, () => {
           this.cb.dispatch({ type: 'launchScene', sceneId: cell.sceneId! });
         });
@@ -257,6 +272,17 @@ export class Performer {
     if (cell.mode === 'repeat') {
       this.repeats.delete(id);
       if (this.repeats.size === 0) this.stopRepeatLoop();
+      return;
+    }
+
+    // A latched clip key has to undo itself, or "Cut" is a one-way door.
+    // Un-latching a stop cell resumes the track; un-latching a clip stops it.
+    if (cell.mode === 'pattern' && cell.behavior === 'toggle' && cell.trackId) {
+      const trackId = cell.trackId;
+      const enabled = cell.patternIndex < 0;
+      this.transport.schedule(cell.quantize, () => {
+        this.cb.dispatch({ type: 'setTrackEnabled', trackId, enabled });
+      });
       return;
     }
 

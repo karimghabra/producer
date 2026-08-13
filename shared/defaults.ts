@@ -10,7 +10,7 @@ import {
   type Project, type Track, type Pattern, type Step, type Cell, type KeyMap,
   type Instrument, type DrumEngine, type SynthEngine, type Scene,
   type DrumParams, type SynthParams, type MasterFx,
-  CELLS_PER_LAYER, LAYER_COUNT,
+  CELLS_PER_LAYER, LAYER_COUNT, GRID_COLS,
 } from './types.ts';
 
 export function uid(prefix = 'id'): string {
@@ -366,22 +366,29 @@ export function defaultKeyMap(tracks: Track[], scenes: Scene[]): KeyMap {
 
   // --- Layer 2: clips -------------------------------------------------------
   const L2 = layers[2];
-  // Each column is a track, each of the top three rows a pattern slot.
-  tracks.slice(0, 10).forEach((track, col) => {
+  // One column per track: the top three rows are pattern slots, the bottom row
+  // stops that track. Every track keeps its own stop key.
+  const clipCols = Math.min(tracks.length, GRID_COLS - 2);
+  tracks.slice(0, clipCols).forEach((track, col) => {
     for (let row = 0; row < 3; row++) {
-      L2[row * 10 + col] = cell({
+      L2[row * GRID_COLS + col] = cell({
         mode: 'pattern', trackId: track.id, patternIndex: row,
         quantize: '1bar', label: `${track.name} ${row + 1}`,
       });
     }
-    L2[30 + col] = cell({
+    L2[3 * GRID_COLS + col] = cell({
       mode: 'pattern', trackId: track.id, patternIndex: -1,
-      quantize: '1bar', label: `Stop ${track.name}`,
+      quantize: '1bar', behavior: 'toggle', label: `Stop ${track.name}`,
     });
   });
-  // Overwrite the last four of the bottom row with scene launchers.
+  // Scenes go in the two spare columns on the right, so they never displace a
+  // track's own stop key.
   scenes.slice(0, 4).forEach((scene, i) => {
-    L2[36 + i] = cell({ mode: 'scene', sceneId: scene.id, quantize: '1bar', label: scene.name });
+    const row = Math.floor(i / 2);
+    const col = GRID_COLS - 2 + (i % 2);
+    L2[row * GRID_COLS + col] = cell({
+      mode: 'scene', sceneId: scene.id, quantize: '1bar', label: scene.name,
+    });
   });
 
   // --- Layer 3: fx ----------------------------------------------------------
@@ -409,9 +416,10 @@ export function defaultKeyMap(tracks: Track[], scenes: Scene[]): KeyMap {
   for (let i = 0; i < 10; i++) {
     L3[i] = cell({ mode: 'macro', macro: 'riser', macroAmount: (i + 1) / 10, behavior: 'gate', label: `Riser ${i + 1}` });
   }
-  // Bottom row: mute toggles per track.
-  tracks.slice(0, 10).forEach((track, i) => {
-    L3[30 + i] = cell({
+  // Bottom row: cut toggles per track. Press to drop the track out, press
+  // again to bring it back — both edges land on the next beat.
+  tracks.slice(0, GRID_COLS).forEach((track, i) => {
+    L3[3 * GRID_COLS + i] = cell({
       mode: 'pattern', trackId: track.id, patternIndex: -1,
       quantize: '1/4', behavior: 'toggle', label: `Cut ${track.name}`,
     });

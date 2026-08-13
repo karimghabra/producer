@@ -11,7 +11,7 @@ import type {
   Project, Track, Pattern, Step, Cell, Scene, MasterFx, TrackMixer,
   Instrument, ProjectSummary, KeyCenter,
 } from '@shared/types';
-import { createProject, makePattern, emptyStep, uid, emptyCell } from '@shared/defaults';
+import { createProject, makePattern, emptyStep, uid, emptyCell, defaultKeyMap } from '@shared/defaults';
 import { clamp } from '@shared/theory';
 import { AudioEngine } from '../audio/engine';
 import { Transport } from '../audio/scheduler';
@@ -43,6 +43,8 @@ export interface AppState {
   playing: boolean;
   fill: boolean;
   recordArmed: string[];
+  /** Scene waiting on a quantize boundary, shown pulsing in the strip. */
+  queuedScene: string | null;
   projects: ProjectSummary[];
   saveState: 'idle' | 'saving' | 'saved' | 'error';
   lastError: string | null;
@@ -85,6 +87,7 @@ export interface AppState {
   toggleRecordArm: (trackId: string) => void;
 
   // ---- patterns ----
+  queuePattern: (trackId: string, index: number) => void;
   setActivePattern: (trackId: string, index: number) => void;
   updatePattern: (trackId: string, index: number, patch: Partial<Pattern>) => void;
   updateStep: (trackId: string, patternIndex: number, stepIndex: number, patch: Partial<Step>) => void;
@@ -101,6 +104,7 @@ export interface AppState {
   // ---- keymap ----
   updateCell: (layer: number, index: number, patch: Partial<Cell>) => void;
   clearCell: (layer: number, index: number) => void;
+  resetKeyMap: (layer?: number) => void;
 
   // ---- master ----
   updateMaster: (patch: Partial<MasterFx>) => void;
@@ -185,6 +189,7 @@ export const useStore = create<AppState>((set, get) => ({
   playing: false,
   fill: false,
   recordArmed: [],
+  queuedScene: null,
   projects: [],
   saveState: 'idle',
   lastError: null,
@@ -204,16 +209,26 @@ export const useStore = create<AppState>((set, get) => ({
       dispatch: (action: PerformerAction) => {
         const s = get();
         switch (action.type) {
+          case 'queuePattern':
+            s.queuePattern(action.trackId, action.patternIndex);
+            break;
+          case 'queueScene':
+            set({ queuedScene: action.sceneId });
+            break;
           case 'launchPattern':
             if (action.patternIndex < 0) {
-              s.updateTrack(action.trackId, { seqEnabled: false });
+              s.updateTrack(action.trackId, { seqEnabled: false, queuedPattern: null });
             } else {
               s.setActivePattern(action.trackId, action.patternIndex);
-              s.updateTrack(action.trackId, { seqEnabled: true });
+              s.updateTrack(action.trackId, { seqEnabled: true, queuedPattern: null });
             }
+            break;
+          case 'setTrackEnabled':
+            s.updateTrack(action.trackId, { seqEnabled: action.enabled, queuedPattern: null });
             break;
           case 'launchScene':
             s.launchScene(action.sceneId);
+            set({ queuedScene: null });
             break;
           case 'toggleRecord':
             s.toggleRecordArm(action.trackId);
@@ -431,10 +446,25 @@ export const useStore = create<AppState>((set, get) => ({
 
   // ---- patterns ----------------------------------------------------------
 
+  /**
+   * Mark a launch as pending. Purely cosmetic — the sequencer does not read
+   * this — but without it a bar-quantized launch looks like a dropped keypress
+   * for up to a full bar.
+   */
+  queuePattern(trackId, index) {
+    set((s) => ({
+      project: mapTrack(s.project, trackId, (t) => ({ ...t, queuedPattern: index })),
+    }));
+    // Hand the transport the new document. A full syncAudio would re-schedule
+    // every mixer param for a purely cosmetic change, but leaving the transport
+    // holding a stale project is the kind of thing that bites later.
+    studio?.transport.setProject(get().project);
+  },
+
   setActivePattern(trackId, index) {
     set((s) => ({
       project: mapTrack(s.project, trackId, (t) => ({
-        ...t, activePattern: clamp(index, 0, t.patterns.length - 1),
+        ...t, activePattern: clamp(index, 0, t.patterns.length - 1), queuedPattern: null,
       })),
     }));
     get().syncAudio();
@@ -533,6 +563,7 @@ export const useStore = create<AppState>((set, get) => ({
               ...t,
               activePattern: clamp(idx, 0, t.patterns.length - 1),
               seqEnabled: true,
+              queuedPattern: null,
             };
           }),
         ),
@@ -589,6 +620,29 @@ export const useStore = create<AppState>((set, get) => ({
 
   clearCell(layer, index) {
     get().updateCell(layer, index, emptyCell());
+  },
+
+  /**
+   * Rebuild the key map from the current tracks and scenes. Pass a layer to
+   * reset only that one. Needed because the map is stored in the project, so
+   * an existing project keeps whatever defaults it was created with.
+   */
+  resetKeyMap(layer) {
+    studio?.performer.panic();
+    set((s) => {
+      const fresh = defaultKeyMap(s.project.tracks, s.project.scenes);
+      const layers = layer === undefined
+        ? fresh.layers
+        : s.project.keymap.layers.map((l, i) => (i === layer ? fresh.layers[i] : l));
+      return {
+        project: {
+          ...s.project,
+          keymap: { layers, layerNames: fresh.layerNames },
+          updatedAt: Date.now(),
+        },
+      };
+    });
+    get().markDirty();
   },
 
   // ---- master ------------------------------------------------------------

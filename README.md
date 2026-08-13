@@ -43,6 +43,33 @@ wheel sweeps the master filter.
 
 ---
 
+## Clips, and when they actually fire
+
+Clip and scene keys are **quantized to the bar**. Pressing one does not switch
+the pattern immediately — it queues the change for the next bar line, so section
+changes land in time instead of wherever your finger happened to be.
+
+That means the wait varies from nothing to a full bar (about 1.9 s at 128 BPM),
+depending on where in the bar you pressed. While a launch is pending it blinks
+amber in three places: the pad, the pattern slot, and the track rail (which
+shows `→` and the incoming pattern name). Nothing is being ignored — it is
+waiting for the downbeat.
+
+If you want a clip to switch the instant you hit it, set that key's **When** to
+`off` in the Key Map editor. With the transport stopped, everything fires
+immediately regardless.
+
+**Layer 3 (Clips)** is laid out one column per track: the top three rows are
+that track's first three patterns, the bottom row stops it. The two rightmost
+columns hold the four scenes. **Layer 4 (FX)** has a `Cut` toggle per track on
+its bottom row — press to drop a track out, press again to bring it back, both
+quantized to the beat.
+
+Scenes only touch tracks listed in their slots. A track added after a scene was
+captured is left alone by that scene until you right-click it to re-capture.
+
+---
+
 ## The maths, and why it is there
 
 Nothing here is clever for its own sake. Each piece exists because it makes a

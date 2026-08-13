@@ -5,6 +5,7 @@ export function SceneStrip() {
   const launchScene = useStore((s) => s.launchScene);
   const captureScene = useStore((s) => s.captureScene);
   const addScene = useStore((s) => s.addScene);
+  const queuedScene = useStore((s) => s.queuedScene);
 
   return (
     <div className="scene-strip">
@@ -14,7 +15,7 @@ export function SceneStrip() {
       {scenes.map((scene) => (
         <button
           key={scene.id}
-          className="scene"
+          className={`scene ${queuedScene === scene.id ? 'queued' : ''}`}
           onClick={() => launchScene(scene.id)}
           onContextMenu={(e) => { e.preventDefault(); captureScene(scene.id); }}
           title="Click to launch · right-click to overwrite with the current clip selection"

@@ -44,6 +44,7 @@ export function PadGrid() {
   const setLayer = useStore((s) => s.setLayer);
   const selectedCell = useStore((s) => s.selectedCell);
   const selectCell = useStore((s) => s.selectCell);
+  const queuedScene = useStore((s) => s.queuedScene);
   const setView = useStore((s) => s.setView);
   const getStudio = useStore((s) => s.getStudio);
   const initAudio = useStore((s) => s.initAudio);
@@ -109,6 +110,10 @@ export function PadGrid() {
               const track = project.tracks.find((t) => t.id === cell.trackId);
               const color = cell.mode === 'hit' && track ? track.color : MODE_COLOR[cell.mode];
               const assigned = cell.mode !== 'empty';
+              // This exact launch is waiting on a bar line.
+              const queued =
+                (cell.mode === 'pattern' && !!track && track.queuedPattern === cell.patternIndex) ||
+                (cell.mode === 'scene' && queuedScene === cell.sceneId);
 
               return (
                 <button
@@ -118,6 +123,7 @@ export function PadGrid() {
                     assigned ? 'assigned' : '',
                     lit ? 'lit' : '',
                     latched ? 'latched' : '',
+                    queued ? 'queued' : '',
                     selectedCell === index ? 'sel' : '',
                   ].filter(Boolean).join(' ')}
                   style={{
