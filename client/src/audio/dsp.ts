@@ -282,12 +282,33 @@ export function adsrValueAt(
   return sus;
 }
 
-/** Schedule a release starting from an explicitly supplied level. */
+/**
+ * Schedule a release starting from an explicitly supplied level.
+ *
+ * Both steps are needed, and neither alone is enough:
+ *
+ * `cancelScheduledValues(t)` deletes any event whose time is at or after `t` —
+ * and a ramp's time is its *end*. A decay ending after the note-off therefore
+ * gets removed wholesale, including the part before `t`, so the gain sits flat
+ * at peak for the whole note and then steps down when the release anchors. The
+ * decay silently never happens.
+ *
+ * `cancelAndHoldAtTime(t)` truncates a ramp in progress instead of deleting it,
+ * which fixes that — but it inserts nothing when no events remain after `t`, so
+ * on its own the following ramp starts from the end of the last event and the
+ * note fades early.
+ *
+ * Hold to keep everything before `t`, then anchor explicitly at `t`.
+ */
 export function applyRelease(
   param: AudioParam, t: number, release: number, from: number,
 ): number {
   const r = Math.max(0.005, release);
-  param.cancelScheduledValues(t);
+  if (typeof param.cancelAndHoldAtTime === 'function') {
+    param.cancelAndHoldAtTime(t);
+  } else {
+    param.cancelScheduledValues(t);
+  }
   param.setValueAtTime(Math.max(SILENCE, from), t);
   param.exponentialRampToValueAtTime(SILENCE, t + r);
   return t + r;

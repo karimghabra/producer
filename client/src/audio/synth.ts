@@ -177,9 +177,10 @@ export class SynthVoice {
     if (p.drive > 0.01) {
       const shaper = ctx.createWaveShaper();
       shaper.curve = saturationCurve(p.drive);
-      // 4x, not 2x: saturation generates harmonics well above the input's own
-      // bandwidth, and anything past Nyquist folds back as inharmonic grit.
-      shaper.oversample = '4x';
+      // 2x. 4x costs real time on the audio thread for every voice, and with
+      // the gentler saturation curve there is little aliasing left to justify
+      // it — the master bus, where there is only one shaper, can afford more.
+      shaper.oversample = '2x';
       tail.connect(shaper);
       tail = shaper;
     }
