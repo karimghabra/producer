@@ -12,6 +12,7 @@ import type {
   Instrument, ProjectSummary, KeyCenter,
 } from '@shared/types';
 import { createProject, makePattern, emptyStep, uid, emptyCell, defaultKeyMap } from '@shared/defaults';
+import { findPreset, initPresetFor, instrumentFromPreset } from '@shared/presets';
 import { clamp } from '@shared/theory';
 import { AudioEngine } from '../audio/engine';
 import { Transport } from '../audio/scheduler';
@@ -80,6 +81,8 @@ export interface AppState {
   updateTrack: (trackId: string, patch: Partial<Track>) => void;
   updateMixer: (trackId: string, patch: Partial<TrackMixer>) => void;
   updateInstrument: (trackId: string, patch: Partial<Instrument>) => void;
+  applyPreset: (trackId: string, presetName: string) => void;
+  resetInstrument: (trackId: string) => void;
   updateDrumParam: (trackId: string, key: string, value: number) => void;
   updateSynthParam: (trackId: string, path: string, value: number | string) => void;
   addTrack: () => void;
@@ -375,6 +378,32 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({
       project: mapTrack(s.project, trackId, (t) => ({
         ...t, instrument: { ...t.instrument, ...patch },
+      })),
+    }));
+    get().markDirty();
+  },
+
+  /** Swap the whole instrument for a named preset, engine included. */
+  applyPreset(trackId, presetName) {
+    const preset = findPreset(presetName);
+    if (!preset) return;
+    set((s) => ({
+      project: mapTrack(s.project, trackId, (t) => ({
+        ...t, instrument: instrumentFromPreset(preset, t.instrument),
+      })),
+    }));
+    get().markDirty();
+  },
+
+  /** Back to the factory sound for whichever engine the track is on. */
+  resetInstrument(trackId) {
+    const track = get().project.tracks.find((t) => t.id === trackId);
+    if (!track) return;
+    const preset = initPresetFor(track.instrument.engine);
+    if (!preset) return;
+    set((s) => ({
+      project: mapTrack(s.project, trackId, (t) => ({
+        ...t, instrument: instrumentFromPreset(preset, t.instrument),
       })),
     }));
     get().markDirty();

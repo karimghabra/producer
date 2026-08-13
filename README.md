@@ -70,6 +70,26 @@ captured is left alone by that scene until you right-click it to re-capture.
 
 ---
 
+## Finding sounds
+
+The **SOUND** tab opens with a row of presets for whichever track is selected —
+25 drum sounds and 16 synth sounds. Click one and it loads *and plays*, so you
+can browse the whole kit by ear. Hovering a preset explains what it is for.
+
+Picking a preset also sets the synthesis engine, so you never have to know that
+a bell needs FM and a supersaw does not.
+
+Every knob explains itself on hover, in words rather than synthesis jargon —
+"how far the pitch drops at the very start, which is what makes a kick thump
+rather than beep" instead of *pitch mod*. Double-click a knob to reset just that
+one, hold shift while dragging for fine control, and **↺ Reset sound** restores
+the factory sound for the current engine without touching the pattern or mix.
+
+The presets are the fastest way to learn the controls: load two kicks that sound
+very different, then look at which knobs moved.
+
+---
+
 ## The maths, and why it is there
 
 Nothing here is clever for its own sake. Each piece exists because it makes a

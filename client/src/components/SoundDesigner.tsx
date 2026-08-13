@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { DrumEngine, SynthEngine } from '@shared/types';
+import { presetsFor, type Preset } from '@shared/presets';
 import { useStore } from '../state/store';
 import { DRUM_ENGINES } from '../audio/drums';
 import { SYNTH_ENGINES } from '../audio/synth';
@@ -18,6 +20,10 @@ export function SoundDesigner() {
   const getStudio = useStore((s) => s.getStudio);
   const initAudio = useStore((s) => s.initAudio);
 
+  const applyPreset = useStore((s) => s.applyPreset);
+  const resetInstrument = useStore((s) => s.resetInstrument);
+  const [hovered, setHovered] = useState<Preset | null>(null);
+
   const track = project.tracks.find((t) => t.id === trackId);
   if (!track) return <div className="panel"><div className="panel-body hint">No track selected.</div></div>;
 
@@ -33,6 +39,22 @@ export function SoundDesigner() {
       studio.transport.playTrackNow(track, t, 0.95, 0, 0, 0.7);
     }
   };
+
+  // Applying a preset and immediately playing it is how you browse by ear.
+  const pickPreset = async (preset: Preset) => {
+    applyPreset(track.id, preset.name);
+    const studio = getStudio() ?? await initAudio();
+    const fresh = useStore.getState().project.tracks.find((t) => t.id === track.id);
+    if (!fresh) return;
+    const t = studio.engine.currentTime + 0.02;
+    if (fresh.instrument.kind === 'drum') {
+      studio.engine.hitDrum(fresh.id, fresh.instrument.engine as DrumEngine, fresh.instrument.drum, t, 1, 0);
+    } else {
+      studio.transport.playTrackNow(fresh, t, 0.95, 0, 0, 0.7);
+    }
+  };
+
+  const presets = presetsFor(inst.kind);
 
   return (
     <>
@@ -59,9 +81,43 @@ export function SoundDesigner() {
           />
           <div className="grow" />
           <button className="chip-btn" onClick={() => void audition()}>▶ Audition</button>
+          <button
+            className="chip-btn"
+            onClick={() => resetInstrument(track.id)}
+            title="Restore the factory sound for this engine. Only affects the sound, not the pattern or mix."
+          >
+            ↺ Reset sound
+          </button>
         </div>
 
         <div className="panel-body col">
+          {/* ---- presets ------------------------------------------------ */}
+          <div>
+            <div className="row" style={{ marginBottom: 7 }}>
+              <span className="dim" style={{ fontSize: 10, width: 66 }}>PRESETS</span>
+              <span className="hint grow">
+                {hovered
+                  ? <><strong style={{ color: track.color }}>{hovered.name}</strong> — {hovered.blurb}</>
+                  : 'Click one to load and hear it. Start here, then turn knobs to taste.'}
+              </span>
+            </div>
+            <div className="row wrap" style={{ gap: 4 }}>
+              {presets.map((p) => (
+                <button
+                  key={p.name}
+                  className={`chip-btn ${p.engine === inst.engine ? '' : 'dim'}`}
+                  style={p.engine === inst.engine ? { borderColor: `${track.color}66` } : undefined}
+                  onClick={() => void pickPreset(p)}
+                  onMouseEnter={() => setHovered(p)}
+                  onMouseLeave={() => setHovered(null)}
+                  title={`${p.name} — ${p.blurb}`}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="row wrap">
             <span className="dim" style={{ fontSize: 10, width: 66 }}>ENGINE</span>
             <Seg
@@ -72,9 +128,18 @@ export function SoundDesigner() {
               }))}
               onChange={(engine) => updateInstrument(track.id, { engine })}
             />
+            <span className="hint">
+              The synthesis method. Presets set this for you — changing it by hand keeps the
+              current knob values, which may not suit the new engine.
+            </span>
           </div>
 
           {isDrum ? <DrumControls trackId={track.id} /> : <SynthControls trackId={track.id} />}
+
+          <div className="hint">
+            Hover any knob for a plain-English description of what it does. Double-click a knob
+            to reset just that one; hold shift while dragging for fine control.
+          </div>
         </div>
       </div>
 

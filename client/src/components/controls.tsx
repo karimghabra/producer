@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clamp, expScale, invExpScale } from '@shared/theory';
+import { PARAM_HELP } from '@shared/presets';
 import { useStore } from '../state/store';
 
 // ---------------------------------------------------------------------------
@@ -21,11 +22,13 @@ export interface KnobProps {
   color?: string;
   /** Draw the arc from the centre instead of the left, for bipolar values. */
   bipolar?: boolean;
+  /** Plain-English explanation, shown on hover. Falls back to PARAM_HELP. */
+  hint?: string;
 }
 
 export function Knob({
   label, value, min, max, onChange,
-  log = false, step = 0, format, color = 'var(--accent)', bipolar = false,
+  log = false, step = 0, format, color = 'var(--accent)', bipolar = false, hint,
 }: KnobProps) {
   const dragging = useRef<{ y: number; norm: number } | null>(null);
 
@@ -81,6 +84,8 @@ export function Knob({
 
   const [px, py] = pt(angleFor(norm), R - 4.5);
   const display = format ? format(value) : value.toFixed(value < 10 ? 2 : 0);
+  const help = hint ?? PARAM_HELP[label];
+  const tip = `${label}${help ? `\n\n${help}` : ''}\n\nDrag to change · shift for fine · double-click to reset`;
 
   return (
     <div className="knob">
@@ -91,7 +96,7 @@ export function Knob({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
-        title={`${label} — drag to change, shift for fine, double-click to reset`}
+        title={tip}
       >
         <svg width="44" height="44" viewBox="0 0 44 44">
           <path d={arcPath(0, 1)} fill="none" stroke="var(--panel-3)" strokeWidth="3.5" strokeLinecap="round" />
@@ -105,7 +110,7 @@ export function Knob({
           <line x1="22" y1="22" x2={px} y2={py} stroke={color} strokeWidth="2" strokeLinecap="round" />
         </svg>
       </div>
-      <div className="knob-label" title={label}>{label}</div>
+      <div className="knob-label" title={tip}>{label}</div>
       <div className="knob-value">{display}</div>
     </div>
   );
@@ -116,13 +121,14 @@ export function Knob({
 // ---------------------------------------------------------------------------
 
 export function Slider({
-  label, value, min, max, step = 0.01, onChange, format,
+  label, value, min, max, step = 0.01, onChange, format, hint,
 }: {
   label: string; value: number; min: number; max: number; step?: number;
-  onChange: (v: number) => void; format?: (v: number) => string;
+  onChange: (v: number) => void; format?: (v: number) => string; hint?: string;
 }) {
+  const help = hint ?? PARAM_HELP[label];
   return (
-    <div className="slider-row">
+    <div className="slider-row" title={help ? `${label} — ${help}` : label}>
       <label>{label}</label>
       <input
         type="range"
