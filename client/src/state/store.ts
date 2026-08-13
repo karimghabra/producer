@@ -203,7 +203,7 @@ export const useStore = create<AppState>((set, get) => ({
       return studio;
     }
     const engine = new AudioEngine();
-    const transport = new Transport(engine, get().project);
+    const transport = new Transport(engine, () => get().project);
     const performer = new Performer(engine, transport, {
       getProject: () => get().project,
       dispatch: (action: PerformerAction) => {
@@ -254,7 +254,10 @@ export const useStore = create<AppState>((set, get) => ({
     engine.syncProject(get().project);
     studio = { engine, transport, performer };
     if (import.meta.env.DEV) {
-      (window as unknown as { pulse: Studio }).pulse = studio;
+      // Both handles come from this module instance, so anything poking at
+      // them from the console is guaranteed to be driving the same store the
+      // app is rendering from.
+      Object.assign(window, { pulse: studio, pulseStore: useStore });
     }
     // The graph is usable while suspended, so publish it first and let the
     // context wake up on its own schedule. Awaiting here would gate the entire
@@ -266,10 +269,14 @@ export const useStore = create<AppState>((set, get) => ({
 
   getStudio: () => studio,
 
+  /**
+   * Push mixer and master state into the audio graph. The transport reads the
+   * project live, so it needs nothing here — only the nodes that hold their own
+   * copy of a value (gains, sends, filter frequencies) have to be told.
+   */
   syncAudio() {
     if (!studio) return;
     const p = get().project;
-    studio.transport.setProject(p);
     studio.engine.setBpm(p.bpm);
     studio.engine.syncProject(p);
   },
@@ -455,10 +462,6 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({
       project: mapTrack(s.project, trackId, (t) => ({ ...t, queuedPattern: index })),
     }));
-    // Hand the transport the new document. A full syncAudio would re-schedule
-    // every mixer param for a purely cosmetic change, but leaving the transport
-    // holding a stale project is the kind of thing that bites later.
-    studio?.transport.setProject(get().project);
   },
 
   setActivePattern(trackId, index) {

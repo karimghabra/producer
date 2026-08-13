@@ -86,20 +86,27 @@ export class Transport {
   onLaunch: (() => void) | null = null;
 
   private engine: AudioEngine;
-  private project: Project;
+  /**
+   * The project is read through a getter rather than held as a snapshot.
+   * A cached copy has to be refreshed by hand on every mutation, and any store
+   * action that forgets leaves the sequencer playing stale data — instrument
+   * edits that only take effect once you happen to touch the mixer, for
+   * instance. Reading live costs nothing and cannot drift.
+   */
+  private readonly getProject: () => Project;
   private ticker: Worker | null = null;
   private running = false;
   private nextTick = 0;
   private nextTickTime = 0;
   private pending: PendingAction[] = [];
 
-  constructor(engine: AudioEngine, project: Project) {
+  constructor(engine: AudioEngine, getProject: () => Project) {
     this.engine = engine;
-    this.project = project;
+    this.getProject = getProject;
   }
 
-  setProject(p: Project): void {
-    this.project = p;
+  private get project(): Project {
+    return this.getProject();
   }
 
   get tickDuration(): number {
