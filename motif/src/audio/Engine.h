@@ -3,47 +3,31 @@
 // ---------------------------------------------------------------------------
 // Motif — audio engine.
 //
-// A plain render loop. Nothing schedules automation against a timeline; every
-// value is computed for the sample being written. Note timing is taken from
-// the audio clock rather than the message thread, so a captured take is
-// accurate to the sample rather than to whenever the UI happened to run.
+// A plain per-sample render loop. Nothing schedules automation against a graph;
+// every value is computed for the sample being written, so a release starts
+// from the level the envelope is actually at because we can simply read it.
+//
+// The sequencer advances in beats inside that same loop, which makes step
+// timing sample-accurate without a separate scheduler or a lookahead window.
 // ---------------------------------------------------------------------------
 
 #include <array>
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <vector>
 
+#include "audio/Drums.h"
 #include "dsp/Dsp.h"
 #include "music/Quantizer.h"
+#include "music/Song.h"
 
 namespace motif {
 
-/** A synth sound. Small on purpose — this is meant to be played, not dialled. */
-struct Patch {
-    dsp::Wave wave = dsp::Wave::Saw;
-    int unison = 5;
-    float detune = 0.30f;       // 0..1
-    float spread = 0.70f;       // stereo width of the unison stack
-    int octave = 0;
-    float sub = 0.25f;
-
-    float cutoff = 2200.0f;     // Hz
-    float resonance = 3.0f;
-    float filterEnv = 2.0f;     // octaves
-    float keyTrack = 0.35f;
-
-    float ampAttack = 0.006f, ampDecay = 0.180f, ampSustain = 0.75f, ampRelease = 0.160f;
-    float fltAttack = 0.004f, fltDecay = 0.220f, fltSustain = 0.40f, fltRelease = 0.150f;
-
-    float drive = 0.25f;
-    float gain = 0.75f;
-};
-
-/** One sounding note. */
+/** One sounding synth note. */
 class Voice {
 public:
-    static constexpr int kMaxUnison = 7;
+    static constexpr int kMaxUnison = 9;
 
     void prepare(double sampleRate);
     void start(int midiNote, float velocity, const Patch& patch);
@@ -52,11 +36,9 @@ public:
 
     bool active() const { return amp_.active(); }
     int note() const { return note_; }
-    /** Rising with age, so the oldest voice is the one stolen. */
-    uint64_t age() const { return startStamp_; }
-    void setStamp(uint64_t s) { startStamp_ = s; }
+    uint64_t age() const { return stamp_; }
+    void setStamp(uint64_t s) { stamp_ = s; }
 
-    /** Render one frame, adding into the stereo pair. */
     void render(float& outL, float& outR, const Patch& patch);
 
 private:
@@ -71,7 +53,7 @@ private:
     float velocity_ = 0.8f;
     int voices_ = 1;
     float baseCutoff_ = 1000.0f;
-    uint64_t startStamp_ = 0;
+    uint64_t stamp_ = 0;
 };
 
 /** A note captured while recording, before it has been fitted. */
@@ -83,70 +65,94 @@ struct PendingNote {
 
 class Engine {
 public:
-    static constexpr int kVoices = 16;
+    static constexpr int kSynthVoices = 24;
+    static constexpr int kDrumVoices = 24;
+    static constexpr int kMaxTracks = 32;
 
     void prepare(double sampleRate, int blockSize);
     void render(float* left, float* right, int numSamples);
 
+    // --- the document -----------------------------------------------------
+    /** Swap the song. Safe to call from the message thread. */
+    void setSong(const Song& song);
+    /** A copy, for the UI to read without racing the audio thread. */
+    Song song() const;
+    /** Edit under the lock: fn receives the live song. */
+    void editSong(const std::function<void(Song&)>& fn);
+
     // --- playing ----------------------------------------------------------
+    /** Play a note on the armed track. */
     void noteOn(int midiNote, float velocity);
     void noteOff(int midiNote);
     void allNotesOff();
+    /** Fire a track's instrument once, ignoring the sequencer. */
+    void auditionTrack(int trackIndex, int midiNote, float velocity);
 
     // --- recording --------------------------------------------------------
-    /** Begin capturing. Timestamps run from this call, on the audio clock. */
     void armRecording();
     bool recording() const { return recording_.load(std::memory_order_relaxed); }
-    /** Stop capturing, infer the grid, and install the result as the loop. */
+    /** Stop capturing and fit. Does not install anything by itself. */
     Take finishRecording(const FitOptions& opts);
-    void clearTake();
 
     // --- transport --------------------------------------------------------
     void setPlaying(bool shouldPlay);
     bool playing() const { return playing_.load(std::memory_order_relaxed); }
-    /** Position through the loop, 0..1, for the UI. */
-    double loopPhase() const { return loopPhase_.load(std::memory_order_relaxed); }
-    double bpm() const { return take_.fit.bpm; }
+    void rewind();
+    /** Position in beats since the transport started. */
+    double positionBeats() const { return positionBeats_.load(std::memory_order_relaxed); }
+    /** Which step of its own pattern each track is on, for the UI. */
+    int trackStep(int trackIndex) const;
 
-    const Take& take() const { return take_; }
-    void setTake(const Take& t);
-
-    Patch& patch() { return patch_; }
-    const Patch& patch() const { return patch_; }
-
-    /** Peak of the last block, for metering. */
     float outputPeak() const { return peak_.load(std::memory_order_relaxed); }
-
-    /** How many notes are currently sounding. */
-    int activeVoices() const;
+    int activeVoiceCount() const;
 
 private:
-    void triggerScheduledNotes(double loopStartBeats, double loopEndBeats);
-    Voice* allocateVoice();
+    void fireStep(int trackIndex, const Track& track, const Pattern& pattern,
+                  int stepIndex, long long passIndex);
+    bool conditionPasses(const TrigCondition& cond, long long pass, long long stepCounter) const;
+    Voice* allocateSynthVoice(int trackIndex);
+    DrumVoice* allocateDrumVoice(int trackIndex);
 
-    std::array<Voice, kVoices> voices_;
-    Patch patch_;
+    struct SynthSlot { Voice voice; int track = -1; };
+    struct DrumSlot { DrumVoice voice; int track = -1; };
+
+    std::array<SynthSlot, kSynthVoices> synths_;
+    std::array<DrumSlot, kDrumVoices> drums_;
+
+    /** Per-track sequencer and ducking state. */
+    struct TrackRuntime {
+        double nextStepBeats = 0.0;
+        long long stepCounter = 0;
+        /** 0 at the moment of a duck, rising to 1 as it recovers. */
+        float duckPhase = 1.0f;
+        int lastStep = -1;
+    };
+    std::array<TrackRuntime, kMaxTracks> runtime_;
+
+    Song song_;
+    mutable std::mutex songLock_;
 
     double sampleRate_ = 44100.0;
+    double beatsPerSample_ = 0.0;
+    double positionBeatsLocal_ = 0.0;
     uint64_t sampleClock_ = 0;
     uint64_t stampCounter_ = 0;
 
     std::atomic<bool> playing_{ false };
     std::atomic<bool> recording_{ false };
-    std::atomic<double> loopPhase_{ 0.0 };
+    std::atomic<double> positionBeats_{ 0.0 };
     std::atomic<float> peak_{ 0.0f };
+    std::array<std::atomic<int>, kMaxTracks> stepDisplay_{};
 
-    // Recording state, written on the audio thread.
+    // Recording.
     uint64_t recordStartSample_ = 0;
     std::vector<PendingNote> held_;
     std::vector<RawNote> captured_;
     std::mutex captureLock_;
 
-    // Playback state.
-    Take take_;
-    double playheadBeats_ = 0.0;
-    std::vector<char> firedThisPass_;
-    std::mutex takeLock_;
+    // Sidechain recovery shape.
+    float duckRelease_ = 0.24f;
+    float duckCurve_ = 1.8f;
 };
 
 } // namespace motif

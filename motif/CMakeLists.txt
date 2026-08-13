@@ -37,7 +37,9 @@ target_sources(Motif PRIVATE
     src/Main.cpp
     src/MainComponent.cpp
     src/audio/Engine.cpp
+    src/audio/Drums.cpp
     src/music/Quantizer.cpp
+    src/music/Song.cpp
     src/ui/Theme.cpp
 )
 
@@ -73,6 +75,8 @@ target_link_libraries(Motif PRIVATE
 add_executable(MotifTests
     tests/QuantizerTest.cpp
     src/music/Quantizer.cpp
+    src/music/Song.cpp
+    src/audio/Drums.cpp
 )
 target_include_directories(MotifTests PRIVATE src)
 

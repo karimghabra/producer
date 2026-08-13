@@ -2,24 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace motif {
 namespace {
 
-inline double midiToHz(double note) {
-    return 440.0 * std::pow(2.0, (note - 69.0) / 12.0);
-}
-
-/**
- * Unison detune spacing, in cents.
- *
- * Not an even spread. The JP-8000's supersaw is the reference here and its
- * oscillators sit at uneven offsets, which is most of why it sounds like one
- * thick voice rather than several thin ones fighting.
- */
-const float kUnisonOffsets[Voice::kMaxUnison] = {
-    -1.0f, -0.5716f, -0.1775f, 0.0f, 0.1775f, 0.5716f, 1.0f
-};
+inline double midiToHz(double note) { return 440.0 * std::pow(2.0, (note - 69.0) / 12.0); }
 
 } // namespace
 
@@ -42,34 +30,26 @@ void Voice::prepare(double sampleRate) {
 
 void Voice::start(int midiNote, float velocity, const Patch& patch) {
     note_ = midiNote;
-    velocity_ = dsp::clampf(velocity, 0.0f, 1.0f);
+    velocity_ = dsp::clampf(velocity, 0.0f, 1.4f);
     voices_ = std::clamp(patch.unison, 1, kMaxUnison);
 
     const double base = double(midiNote + patch.octave * 12);
     const double hz = midiToHz(base);
 
-    // Detune depth rises steeply at the top of the knob, which is how the
-    // control on the original behaves and why small settings stay usable.
-    const double depthCents = std::pow(double(patch.detune), 2.4) * 55.0;
+    // The JP-8000 spacing, resampled to whatever voice count is in use. Even
+    // spacing sounds like several thin voices; this sounds like one thick one.
+    const auto cents = theory::unisonCents(voices_, double(patch.detune));
 
     for (int i = 0; i < voices_; ++i) {
-        // Resample the seven-oscillator spacing onto however many we are using.
-        const float t = voices_ == 1 ? 0.0f
-                                     : float(i) / float(voices_ - 1) * float(kMaxUnison - 1);
-        const int lo = int(t);
-        const int hi = std::min(kMaxUnison - 1, lo + 1);
-        const float frac = t - float(lo);
-        const float rel = kUnisonOffsets[lo] * (1.0f - frac) + kUnisonOffsets[hi] * frac;
-
         oscs_[size_t(i)].setWave(patch.wave);
-        oscs_[size_t(i)].setFrequency(hz * std::pow(2.0, (rel * depthCents) / 1200.0));
-        // Random start phase: identical phases would sum into one loud spike on
-        // every note and make the unison stack pointless for the first cycle.
-        oscs_[size_t(i)].resetPhase(double(i) * 0.137 + 0.0193 * double(midiNote % 7));
+        oscs_[size_t(i)].setFrequency(hz * std::pow(2.0, cents[size_t(i)] / 1200.0));
+        // Spread the start phases. Identical phases would sum into one loud
+        // spike on every note and waste the stack for its first cycle.
+        oscs_[size_t(i)].resetPhase(std::fmod(double(i) * 0.137 + double(midiNote % 7) * 0.019, 1.0));
 
-        const float pos = voices_ == 1 ? 0.0f
-                                       : (float(i) / float(voices_ - 1) * 2.0f - 1.0f) * patch.spread;
-        // Equal power, so widening the stack does not change its loudness.
+        const float pos = voices_ == 1
+            ? 0.0f
+            : (float(i) / float(voices_ - 1) * 2.0f - 1.0f) * patch.spread;
         const float angle = (dsp::clampf(pos, -1.0f, 1.0f) + 1.0f) * 0.25f * float(dsp::kPi);
         panL_[size_t(i)] = std::cos(angle);
         panR_[size_t(i)] = std::sin(angle);
@@ -92,15 +72,8 @@ void Voice::start(int midiNote, float velocity, const Patch& patch) {
     filtEnv_.noteOn();
 }
 
-void Voice::release() {
-    amp_.noteOff();
-    filtEnv_.noteOff();
-}
-
-void Voice::kill() {
-    amp_.reset();
-    filtEnv_.reset();
-}
+void Voice::release() { amp_.noteOff(); filtEnv_.noteOff(); }
+void Voice::kill() { amp_.reset(); filtEnv_.reset(); }
 
 void Voice::render(float& outL, float& outR, const Patch& patch) {
     if (!amp_.active()) return;
@@ -108,8 +81,6 @@ void Voice::render(float& outL, float& outR, const Patch& patch) {
     const float ampVal = amp_.next();
     const float envVal = filtEnv_.next();
 
-    // Filter cutoff, per sample. Sweeping this hard is exactly why the filter
-    // is a TPT state variable rather than a biquad.
     const float cutoff = dsp::clampf(baseCutoff_ * std::pow(2.0f, patch.filterEnv * envVal),
                                      30.0f, float(sampleRate_ * 0.45));
     filterL_.set(cutoff, patch.resonance);
@@ -121,7 +92,6 @@ void Voice::render(float& outL, float& outR, const Patch& patch) {
         l += s * panL_[size_t(i)];
         r += s * panR_[size_t(i)];
     }
-    // Incoherent sources sum as the square root of their count.
     const float norm = 1.0f / std::sqrt(float(voices_));
     l *= norm;
     r *= norm;
@@ -136,11 +106,8 @@ void Voice::render(float& outL, float& outR, const Patch& patch) {
     r = filterR_.next(r);
 
     const float g = ampVal * velocity_ * 0.5f;
-    l = dsp::saturate(l * g, patch.drive);
-    r = dsp::saturate(r * g, patch.drive);
-
-    outL += l;
-    outR += r;
+    outL += dsp::saturate(l * g, patch.drive);
+    outR += dsp::saturate(r * g, patch.drive);
 }
 
 // ---------------------------------------------------------------------------
@@ -149,27 +116,85 @@ void Voice::render(float& outL, float& outR, const Patch& patch) {
 
 void Engine::prepare(double sampleRate, int /*blockSize*/) {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
-    for (auto& v : voices_) v.prepare(sampleRate_);
+    for (auto& s : synths_) s.voice.prepare(sampleRate_);
+    for (auto& d : drums_) d.voice.prepare(sampleRate_);
     sampleClock_ = 0;
-    playheadBeats_ = 0.0;
+    positionBeatsLocal_ = 0.0;
+    if (song_.tracks.empty()) song_ = makeDefaultSong();
 }
 
-Voice* Engine::allocateVoice() {
-    Voice* free = nullptr;
-    Voice* oldest = &voices_[0];
-    for (auto& v : voices_) {
-        if (!v.active()) { free = &v; break; }
-        if (v.age() < oldest->age()) oldest = &v;
-    }
-    Voice* chosen = free ? free : oldest;
-    if (!free) chosen->kill();          // steal, with the envelope reset cleanly
-    chosen->setStamp(++stampCounter_);
-    return chosen;
+void Engine::setSong(const Song& song) {
+    std::lock_guard<std::mutex> lock(songLock_);
+    song_ = song;
+    for (auto& r : runtime_) r = TrackRuntime{};
+    positionBeatsLocal_ = 0.0;
 }
+
+Song Engine::song() const {
+    std::lock_guard<std::mutex> lock(songLock_);
+    return song_;
+}
+
+void Engine::editSong(const std::function<void(Song&)>& fn) {
+    std::lock_guard<std::mutex> lock(songLock_);
+    fn(song_);
+}
+
+// --- allocation ------------------------------------------------------------
+
+Voice* Engine::allocateSynthVoice(int trackIndex) {
+    SynthSlot* freeSlot = nullptr;
+    SynthSlot* oldest = &synths_[0];
+    for (auto& s : synths_) {
+        if (!s.voice.active()) { freeSlot = &s; break; }
+        if (s.voice.age() < oldest->voice.age()) oldest = &s;
+    }
+    SynthSlot* chosen = freeSlot ? freeSlot : oldest;
+    if (!freeSlot) chosen->voice.kill();
+    chosen->track = trackIndex;
+    chosen->voice.setStamp(++stampCounter_);
+    return &chosen->voice;
+}
+
+DrumVoice* Engine::allocateDrumVoice(int trackIndex) {
+    for (auto& d : drums_) {
+        if (!d.voice.active()) { d.track = trackIndex; return &d.voice; }
+    }
+    // All busy: take the first. Percussion is short, so this is rare and the
+    // stolen voice is almost always nearly finished anyway.
+    drums_[0].track = trackIndex;
+    return &drums_[0].voice;
+}
+
+// --- playing ---------------------------------------------------------------
 
 void Engine::noteOn(int midiNote, float velocity) {
-    Voice* v = allocateVoice();
-    v->start(midiNote, velocity, patch_);
+    int armed = -1;
+    Patch patch;
+    bool isDrum = false;
+    DrumEngine engine = DrumEngine::Kick;
+    DrumParams drumParams;
+    {
+        std::lock_guard<std::mutex> lock(songLock_);
+        for (size_t i = 0; i < song_.tracks.size(); ++i) {
+            if (song_.tracks[i].armed) { armed = int(i); break; }
+        }
+        if (armed < 0 && !song_.tracks.empty()) armed = 0;
+        if (armed >= 0) {
+            const auto& t = song_.tracks[size_t(armed)];
+            isDrum = t.instrument.isDrum;
+            patch = t.instrument.synth;
+            engine = t.instrument.drumEngine;
+            drumParams = t.instrument.drum;
+        }
+    }
+    if (armed < 0) return;
+
+    if (isDrum) {
+        allocateDrumVoice(armed)->trigger(engine, drumParams, velocity, float(midiNote - 60));
+    } else {
+        allocateSynthVoice(armed)->start(midiNote, velocity, patch);
+    }
 
     if (recording_.load(std::memory_order_relaxed)) {
         std::lock_guard<std::mutex> lock(captureLock_);
@@ -179,8 +204,8 @@ void Engine::noteOn(int midiNote, float velocity) {
 }
 
 void Engine::noteOff(int midiNote) {
-    for (auto& v : voices_) {
-        if (v.active() && v.note() == midiNote) v.release();
+    for (auto& s : synths_) {
+        if (s.voice.active() && s.voice.note() == midiNote) s.voice.release();
     }
 
     if (recording_.load(std::memory_order_relaxed)) {
@@ -197,13 +222,37 @@ void Engine::noteOff(int midiNote) {
 }
 
 void Engine::allNotesOff() {
-    for (auto& v : voices_) if (v.active()) v.release();
+    for (auto& s : synths_) if (s.voice.active()) s.voice.release();
 }
 
-int Engine::activeVoices() const {
+void Engine::auditionTrack(int trackIndex, int midiNote, float velocity) {
+    Patch patch;
+    bool isDrum = false;
+    DrumEngine engine = DrumEngine::Kick;
+    DrumParams drumParams;
+    {
+        std::lock_guard<std::mutex> lock(songLock_);
+        if (trackIndex < 0 || trackIndex >= int(song_.tracks.size())) return;
+        const auto& t = song_.tracks[size_t(trackIndex)];
+        isDrum = t.instrument.isDrum;
+        patch = t.instrument.synth;
+        engine = t.instrument.drumEngine;
+        drumParams = t.instrument.drum;
+    }
+    if (isDrum) allocateDrumVoice(trackIndex)->trigger(engine, drumParams, velocity, float(midiNote - 60));
+    else        allocateSynthVoice(trackIndex)->start(midiNote, velocity, patch);
+}
+
+int Engine::activeVoiceCount() const {
     int n = 0;
-    for (const auto& v : voices_) if (v.active()) ++n;
+    for (const auto& s : synths_) if (s.voice.active()) ++n;
+    for (const auto& d : drums_) if (d.voice.active()) ++n;
     return n;
+}
+
+int Engine::trackStep(int trackIndex) const {
+    if (trackIndex < 0 || trackIndex >= kMaxTracks) return -1;
+    return stepDisplay_[size_t(trackIndex)].load(std::memory_order_relaxed);
 }
 
 // --- recording -------------------------------------------------------------
@@ -222,8 +271,7 @@ Take Engine::finishRecording(const FitOptions& opts) {
     std::vector<RawNote> notes;
     {
         std::lock_guard<std::mutex> lock(captureLock_);
-        // Anything still held when recording stopped ends now rather than
-        // being thrown away — a note you were still holding is still a note.
+        // A note still held when recording stopped is still a note.
         const double t = double(sampleClock_ - recordStartSample_) / sampleRate_;
         for (const auto& h : held_) captured_.push_back({ h.startSec, t, h.pitch, h.velocity });
         held_.clear();
@@ -232,33 +280,69 @@ Take Engine::finishRecording(const FitOptions& opts) {
 
     std::sort(notes.begin(), notes.end(),
               [](const RawNote& a, const RawNote& b) { return a.startSec < b.startSec; });
-
-    Take fitted = fitTake(notes, opts);
-    setTake(fitted);
-    return fitted;
-}
-
-void Engine::clearTake() {
-    std::lock_guard<std::mutex> lock(takeLock_);
-    take_ = Take{};
-    playheadBeats_ = 0.0;
-}
-
-void Engine::setTake(const Take& t) {
-    std::lock_guard<std::mutex> lock(takeLock_);
-    take_ = t;
-    firedThisPass_.assign(t.fitted.size(), char(0));
-    playheadBeats_ = 0.0;
+    return fitTake(notes, opts);
 }
 
 void Engine::setPlaying(bool shouldPlay) {
     playing_.store(shouldPlay, std::memory_order_relaxed);
-    if (!shouldPlay) {
-        allNotesOff();
+    if (!shouldPlay) allNotesOff();
+    else rewind();
+}
+
+void Engine::rewind() {
+    std::lock_guard<std::mutex> lock(songLock_);
+    positionBeatsLocal_ = 0.0;
+    for (auto& r : runtime_) r = TrackRuntime{};
+}
+
+// --- sequencing ------------------------------------------------------------
+
+bool Engine::conditionPasses(const TrigCondition& cond, long long pass, long long stepCounter) const {
+    switch (cond.type) {
+        case TrigCondition::Type::Always: return true;
+        case TrigCondition::Type::Probability:
+            // Seeded by position, so a given step behaves the same way each
+            // time round rather than flickering.
+            return theory::hashRandom(stepCounter * 7919 + pass * 104729) < double(cond.chance);
+        case TrigCondition::Type::Ratio: {
+            const int of = std::max(1, cond.of);
+            return ((pass % of) + of) % of == (cond.hit - 1) % of;
+        }
+        case TrigCondition::Type::First:    return pass == 0;
+        case TrigCondition::Type::NotFirst: return pass > 0;
+        case TrigCondition::Type::Fill:     return false;    // driven by the UI later
+        case TrigCondition::Type::NotFill:  return true;
+    }
+    return true;
+}
+
+void Engine::fireStep(int trackIndex, const Track& track, const Pattern& pattern,
+                      int stepIndex, long long passIndex) {
+    if (stepIndex < 0 || stepIndex >= int(pattern.steps.size())) return;
+    if (!pattern.stepOn(stepIndex)) return;
+
+    const Step& step = pattern.steps[size_t(stepIndex)];
+    auto& rt = runtime_[size_t(trackIndex)];
+    if (!conditionPasses(step.cond, passIndex, rt.stepCounter)) return;
+
+    const float velocity = std::clamp(step.velocity * (step.accent ? 1.25f : 1.0f), 0.0f, 1.3f);
+
+    if (track.instrument.isDrum) {
+        const int semis = theory::degreeToMidi(song_.key, step.degree, step.octave)
+                        - theory::degreeToMidi(song_.key, 0, 0);
+        allocateDrumVoice(trackIndex)->trigger(track.instrument.drumEngine, track.instrument.drum,
+                                               velocity, float(semis));
     } else {
-        std::lock_guard<std::mutex> lock(takeLock_);
-        playheadBeats_ = 0.0;
-        std::fill(firedThisPass_.begin(), firedThisPass_.end(), char(0));
+        const int midi = theory::degreeToMidi(song_.key, step.degree, step.octave);
+        allocateSynthVoice(trackIndex)->start(midi, velocity, track.instrument.synth);
+    }
+
+    // Sidechain: the duck is triggered by the hit itself, at the same instant,
+    // so it locks to the grid exactly rather than chasing a detector.
+    if (trackIndex == song_.sidechainSource) {
+        for (size_t i = 0; i < song_.tracks.size() && i < kMaxTracks; ++i) {
+            if (song_.tracks[i].mixer.duck > 0.01f) runtime_[i].duckPhase = 0.0f;
+        }
     }
 }
 
@@ -268,73 +352,93 @@ void Engine::render(float* left, float* right, int numSamples) {
     std::fill(left, left + numSamples, 0.0f);
     std::fill(right, right + numSamples, 0.0f);
 
+    std::unique_lock<std::mutex> lock(songLock_, std::try_to_lock);
+    if (!lock.owns_lock()) return;      // a block of silence beats a glitch
+
+    const size_t trackCount = std::min(song_.tracks.size(), size_t(kMaxTracks));
     const bool isPlaying = playing_.load(std::memory_order_relaxed);
+    const bool anySolo = song_.anySolo();
+    beatsPerSample_ = song_.bpm / 60.0 / sampleRate_;
+    const float duckRelease = std::max(0.02f, duckRelease_);
+    const float duckStep = float(1.0 / (double(duckRelease) * sampleRate_));
 
-    // Sequencer. Advance in beats and fire anything the playhead crosses.
-    if (isPlaying) {
-        std::unique_lock<std::mutex> lock(takeLock_, std::try_to_lock);
-        if (lock.owns_lock() && !take_.fitted.empty()) {
-            const double beatsPerSample = take_.fit.bpm / 60.0 / sampleRate_;
-            const double loopBeats = take_.beatsPerLoop();
-            const double blockBeats = beatsPerSample * double(numSamples);
-            const double from = playheadBeats_;
-            double to = from + blockBeats;
+    std::array<float, kMaxTracks> trackL{}, trackR{};
 
-            triggerScheduledNotes(from, to);
+    for (int n = 0; n < numSamples; ++n) {
+        // --- sequencer, advanced in beats ---------------------------------
+        if (isPlaying) {
+            for (size_t t = 0; t < trackCount; ++t) {
+                const Track& track = song_.tracks[t];
+                if (!track.seqEnabled) continue;
+                const Pattern* pattern = track.current();
+                if (!pattern || pattern->steps.empty()) continue;
 
-            if (to >= loopBeats) {
-                to -= loopBeats;
-                std::fill(firedThisPass_.begin(), firedThisPass_.end(), char(0));
-                triggerScheduledNotes(0.0, to);
+                auto& rt = runtime_[t];
+                const double stepBeats = 1.0 / double(std::max(1, pattern->resolution));
+
+                if (positionBeatsLocal_ >= rt.nextStepBeats) {
+                    const long long absolute = rt.stepCounter;
+                    const int index = int(((absolute % pattern->length) + pattern->length) % pattern->length);
+                    const long long pass = absolute / pattern->length;
+
+                    fireStep(int(t), track, *pattern, index, pass);
+                    stepDisplay_[t].store(index, std::memory_order_relaxed);
+
+                    ++rt.stepCounter;
+                    // Swing and per-step nudge move the NEXT boundary rather
+                    // than the note, which keeps the grid itself uniform.
+                    const double swing = theory::swingOffset(int(rt.stepCounter), song_.swing, song_.swingUnit);
+                    rt.nextStepBeats = double(rt.stepCounter) * stepBeats + swing * stepBeats;
+                }
             }
-            playheadBeats_ = to;
-            loopPhase_.store(loopBeats > 0.0 ? playheadBeats_ / loopBeats : 0.0,
-                             std::memory_order_relaxed);
+            positionBeatsLocal_ += beatsPerSample_;
         }
-    }
 
-    // Voices.
-    for (int i = 0; i < numSamples; ++i) {
-        float l = 0.0f, r = 0.0f;
-        for (auto& v : voices_) v.render(l, r, patch_);
+        // --- voices --------------------------------------------------------
+        trackL.fill(0.0f);
+        trackR.fill(0.0f);
 
-        l *= patch_.gain;
-        r *= patch_.gain;
+        for (auto& s : synths_) {
+            if (!s.voice.active() || s.track < 0 || s.track >= int(trackCount)) continue;
+            s.voice.render(trackL[size_t(s.track)], trackR[size_t(s.track)],
+                           song_.tracks[size_t(s.track)].instrument.synth);
+        }
+        for (auto& d : drums_) {
+            if (!d.voice.active() || d.track < 0 || d.track >= int(trackCount)) continue;
+            d.voice.render(trackL[size_t(d.track)], trackR[size_t(d.track)]);
+        }
 
-        // Last line of defence: the output can never leave [-1, 1] no matter
-        // how many voices land on the same sample.
-        left[i] = dsp::softClip(l);
-        right[i] = dsp::softClip(r);
+        // --- mixer ---------------------------------------------------------
+        float mixL = 0.0f, mixR = 0.0f;
+        for (size_t t = 0; t < trackCount; ++t) {
+            const Mixer& m = song_.tracks[t].mixer;
+            const bool audible = !m.mute && (!anySolo || m.solo);
+            if (!audible) continue;
+
+            auto& rt = runtime_[t];
+            if (rt.duckPhase < 1.0f) rt.duckPhase = std::min(1.0f, rt.duckPhase + duckStep);
+            // 1 - a*(1-x)^curve: above 1 the level hangs low then snaps back,
+            // which is the pump; below 1 it lifts immediately.
+            const float duck = 1.0f - m.duck * std::pow(1.0f - rt.duckPhase, duckCurve_);
+
+            const float g = m.gain * duck;
+            const float angle = (std::clamp(m.pan, -1.0f, 1.0f) + 1.0f) * 0.25f * float(dsp::kPi);
+            mixL += trackL[t] * g * std::cos(angle);
+            mixR += trackR[t] * g * std::sin(angle);
+        }
+
+        // Last line of defence: the output can never leave [-1, 1] however many
+        // voices land on the same sample.
+        left[n] = dsp::softClip(mixL);
+        right[n] = dsp::softClip(mixR);
     }
 
     sampleClock_ += uint64_t(numSamples);
+    if (isPlaying) positionBeats_.store(positionBeatsLocal_, std::memory_order_relaxed);
 
     float peak = 0.0f;
     for (int i = 0; i < numSamples; ++i) peak = std::max(peak, std::abs(left[i]));
     peak_.store(peak, std::memory_order_relaxed);
-}
-
-void Engine::triggerScheduledNotes(double fromBeats, double toBeats) {
-    for (size_t i = 0; i < take_.fitted.size(); ++i) {
-        if (firedThisPass_[i]) continue;
-        const double s = take_.fitted[i].startBeats;
-        if (s >= fromBeats && s < toBeats) {
-            const auto& n = take_.fitted[i];
-            Voice* v = allocateVoice();
-            v->start(n.pitch, n.velocity, patch_);
-            firedThisPass_[i] = 1;
-        }
-    }
-    // Release notes whose length has run out.
-    for (size_t i = 0; i < take_.fitted.size(); ++i) {
-        const auto& n = take_.fitted[i];
-        const double end = n.startBeats + n.lengthBeats;
-        if (end >= fromBeats && end < toBeats) {
-            for (auto& v : voices_) {
-                if (v.active() && v.note() == n.pitch) { v.release(); break; }
-            }
-        }
-    }
 }
 
 } // namespace motif
