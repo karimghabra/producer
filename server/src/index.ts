@@ -109,6 +109,45 @@ function toStored(p: Project): StoredProject {
 
 app.use((_req, res) => fail(res, 404, 'No such route'));
 
-app.listen(PORT, () => {
-  console.log(`\n  ▸ Pulse API on http://localhost:${PORT}  (store: ${store.backend})\n`);
-});
+/**
+ * Bind with retries.
+ *
+ * `node --watch` restarts this process the instant a file changes, which can
+ * easily happen before the previous instance has released its socket. An
+ * unhandled EADDRINUSE takes the process down and --watch then idles until the
+ * *next* file change — so a momentary clash leaves the API dead indefinitely
+ * while the front end carries on looking healthy. Retrying costs nothing and
+ * removes that failure mode entirely.
+ */
+const MAX_BIND_ATTEMPTS = 8;
+
+function listen(port: number, attempt = 1): void {
+  const server = app.listen(port);
+
+  server.once('listening', () => {
+    console.log(`\n  ▸ Pulse API on http://localhost:${port}  (store: ${store.backend})\n`);
+  });
+
+  server.once('error', (err: NodeJS.ErrnoException) => {
+    if (err.code !== 'EADDRINUSE') throw err;
+
+    if (attempt >= MAX_BIND_ATTEMPTS) {
+      console.error(
+        `\n  ✖ Port ${port} is still in use after ${attempt} attempts.\n` +
+        `    Another process is holding it. Free it, or start with a different port:\n` +
+        `      API_PORT=5179 npm run dev:server\n` +
+        `    (the client proxy in client/vite.config.ts points at 5178)\n`,
+      );
+      process.exit(1);
+    }
+
+    const delay = 200 * attempt;
+    console.warn(`  … port ${port} busy, retrying in ${delay}ms (${attempt}/${MAX_BIND_ATTEMPTS})`);
+    // Deliberately not unref'd: a failed listen leaves nothing else holding the
+    // event loop open, so an unref'd timer would let the process exit before
+    // the retry ever ran.
+    setTimeout(() => listen(port, attempt + 1), delay);
+  });
+}
+
+listen(PORT);
