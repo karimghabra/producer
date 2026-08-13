@@ -18,7 +18,7 @@ import type {
   Project, Track, MasterFx, DrumParams, SynthParams, SynthEngine, DrumEngine,
 } from '@shared/types';
 import { clamp, mtof } from '@shared/theory';
-import { makeReverbIR, saturationCurve, crushCurve, whiteNoise } from './dsp';
+import { makeReverbIR, saturationCurve, crushCurve, softClipCurve, whiteNoise } from './dsp';
 import { triggerDrum } from './drums';
 import { SynthVoice } from './synth';
 
@@ -70,6 +70,7 @@ export class AudioEngine {
   private gateGain: GainNode;
   private limiter: DynamicsCompressorNode;
   private outGain: GainNode;
+  private safety: WaveShaperNode;
   private analyser: AnalyserNode;
   private meterBuf: Float32Array<ArrayBuffer>;
 
@@ -151,6 +152,12 @@ export class AudioEngine {
     this.outGain = ctx.createGain();
     this.outGain.gain.value = 0.85;
 
+    // Last thing before the speakers: a transparent-below-knee soft clip, so
+    // the graph physically cannot hand the device a sample past full scale.
+    this.safety = ctx.createWaveShaper();
+    this.safety.curve = softClipCurve(0.7);
+    this.safety.oversample = '2x';
+
     this.analyser = ctx.createAnalyser();
     this.analyser.fftSize = 2048;
     this.analyser.smoothingTimeConstant = 0.5;
@@ -171,7 +178,8 @@ export class AudioEngine {
     this.driveShaper.connect(this.gateGain);
     this.gateGain.connect(this.limiter);
     this.limiter.connect(this.outGain);
-    this.outGain.connect(this.analyser);
+    this.outGain.connect(this.safety);
+    this.safety.connect(this.analyser);
     this.analyser.connect(ctx.destination);
 
     // ---- reverb ----------------------------------------------------------

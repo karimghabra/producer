@@ -168,6 +168,37 @@ export function saturationCurve(amount: number, samples = 2048): Curve {
   return curve;
 }
 
+/**
+ * Final output safety.
+ *
+ * Below `knee` this is exactly a straight wire, so normal material passes
+ * untouched. Above it the curve bends and asymptotes to 1, so the output can
+ * never leave [-1, 1] no matter how many tracks sum or how hard the limiter is
+ * driven. The join is C1-continuous — tanh'(0) = 1 — so the transition itself
+ * introduces no corner.
+ *
+ * This cannot repair a click that is already in the signal. What it does is
+ * remove an entire cause: samples past full scale, which the audio device
+ * hard-clips into broadband crackle.
+ */
+export function softClipCurve(knee = 0.7, samples = 4096): Curve {
+  const key = `clip:${knee.toFixed(3)}`;
+  const hit = shaperCache.get(key);
+  if (hit) return hit;
+
+  const curve = new Float32Array(samples);
+  const span = 1 - knee;
+  for (let i = 0; i < samples; i++) {
+    const x = (i / (samples - 1)) * 2 - 1;
+    const a = Math.abs(x);
+    curve[i] = a <= knee
+      ? x
+      : Math.sign(x) * (knee + span * Math.tanh((a - knee) / span));
+  }
+  shaperCache.set(key, curve);
+  return curve;
+}
+
 /** Bit-depth reduction as a staircase transfer function. */
 export function crushCurve(amount: number, samples = 4096): Curve {
   const a = clamp(amount, 0, 1);
@@ -198,6 +229,13 @@ export function crushCurve(amount: number, samples = 4096): Curve {
 export const SILENCE = 0.0001;
 
 /**
+ * Segments used to approximate the raised-cosine attack. Each boundary is
+ * itself a small corner, so the residual slope-step scales as 1/N — 24 puts it
+ * far below the signal's own curvature.
+ */
+const ATTACK_SEGMENTS = 24;
+
+/**
  * Schedule attack/decay/sustain on an amplitude param.
  *
  * The attack is linear from true zero, not exponential from a tiny floor. An
@@ -220,7 +258,17 @@ export function applyAttackDecay(
   const p = Math.max(SILENCE, peak);
   param.cancelScheduledValues(t0);
   param.setValueAtTime(0, t0);
-  param.linearRampToValueAtTime(p, t0 + a);
+  // Raised-cosine attack, as a run of short linear segments.
+  //
+  // A single straight ramp is continuous in value but not in slope: it stops
+  // dead at the top, and that corner is a step in the first derivative. It
+  // shows up as a transient even on a pure sine, where there is nothing else
+  // to blame. `(1 - cos(pi x)) / 2` leaves at zero slope and arrives at zero
+  // slope, so neither end has a corner.
+  for (let i = 1; i <= ATTACK_SEGMENTS; i++) {
+    const x = i / ATTACK_SEGMENTS;
+    param.linearRampToValueAtTime(p * (1 - Math.cos(Math.PI * x)) / 2, t0 + a * x);
+  }
   param.exponentialRampToValueAtTime(Math.max(SILENCE, p * sustain), t0 + a + d);
   return t0 + a + d;
 }
@@ -275,8 +323,10 @@ export function adsrValueAt(
   const d = Math.max(0.001, decay);
   const p = Math.max(SILENCE, peak);
   if (t <= t0) return SILENCE;
-  // Matches applyAttackDecay: linear attack, exponential decay.
-  if (t < t0 + a) return Math.max(SILENCE, p * ((t - t0) / a));
+  // Matches applyAttackDecay: raised-cosine attack, exponential decay.
+  if (t < t0 + a) {
+    return Math.max(SILENCE, p * (1 - Math.cos(Math.PI * ((t - t0) / a))) / 2);
+  }
   const sus = Math.max(SILENCE, p * sustain);
   if (t < t0 + a + d) return p * Math.pow(sus / p, (t - t0 - a) / d);
   return sus;

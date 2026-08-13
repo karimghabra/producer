@@ -334,10 +334,28 @@ const VOICES: Record<DrumEngine, (h: HitContext) => number> = {
   noise: noiseHit,
 };
 
+/**
+ * Headroom, applied at the voice output.
+ *
+ * It cannot be folded into the velocity: saturation normalises as
+ * tanh(k·x)/tanh(k), which at high drive maps almost any input back up to full
+ * scale, so a quieter input comes out just as loud. The body and the transient
+ * are also separate branches that can align. Measured peaks were 1.01–1.02,
+ * and anything past 1.0 hard-clips at the device, which is heard as static.
+ */
+const HEADROOM = 0.82;
+
 /** Fire one drum hit. Returns the time the voice finishes. */
 export function triggerDrum(engine: DrumEngine, h: HitContext): number {
   const voice = VOICES[engine] ?? kick;
-  return voice({ ...h, velocity: clamp(h.velocity, 0, 1.4) });
+  const trim = h.ctx.createGain();
+  trim.gain.value = HEADROOM;
+  trim.connect(h.dest);
+  const end = voice({ ...h, dest: trim, velocity: clamp(h.velocity, 0, 1.4) });
+  // Detach once the voice is silent so the graph does not accumulate.
+  const ms = Math.max(0, (end - h.ctx.currentTime) * 1000) + 250;
+  setTimeout(() => { try { trim.disconnect(); } catch { /* gone */ } }, ms);
+  return end;
 }
 
 export const DRUM_ENGINES: DrumEngine[] = [
