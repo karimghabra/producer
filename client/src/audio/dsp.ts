@@ -152,8 +152,13 @@ export function saturationCurve(amount: number, samples = 2048): Curve {
   if (hit) return hit;
 
   const curve = new Float32Array(samples);
-  // Drive rises exponentially so the knob feels linear to the ear.
-  const k = 1 + a * a * 40;
+  // `k` is the tanh pre-gain. It has to stay modest: tanh saturates hard once
+  // k·x exceeds ~2, so a large k flattens everything above a small threshold
+  // into a plateau and the output becomes a square wave with instantaneous
+  // edges. That is not saturation, it is clipping, and on a bass it turns the
+  // decay into an audible click per cycle. `1 + a²·8` tops out at 9, which is
+  // genuinely dirty at full travel while leaving mid settings as warmth.
+  const k = 1 + a * a * 8;
   const norm = Math.tanh(k);
   for (let i = 0; i < samples; i++) {
     const x = (i / (samples - 1)) * 2 - 1;
@@ -192,7 +197,16 @@ export function crushCurve(amount: number, samples = 4096): Curve {
  */
 export const SILENCE = 0.0001;
 
-/** Schedule attack/decay/sustain on a param. Returns the time sustain begins. */
+/**
+ * Schedule attack/decay/sustain on an amplitude param.
+ *
+ * The attack is linear from true zero, not exponential from a tiny floor. An
+ * exponential ramp from 0.0001 to 0.45 is a factor of 4500, so virtually all
+ * of the rise happens in the final fraction of the attack time — the level
+ * sits at nothing and then snaps, which is heard as a click on every note
+ * rather than as a fast attack. Decay stays exponential, which is what decay
+ * actually sounds like.
+ */
 export function applyAttackDecay(
   param: AudioParam,
   t0: number,
@@ -203,10 +217,39 @@ export function applyAttackDecay(
 ): number {
   const a = Math.max(0.0005, attack);
   const d = Math.max(0.001, decay);
+  const p = Math.max(SILENCE, peak);
   param.cancelScheduledValues(t0);
-  param.setValueAtTime(SILENCE, t0);
-  param.exponentialRampToValueAtTime(Math.max(SILENCE, peak), t0 + a);
-  const sus = Math.max(SILENCE, peak * sustain);
+  param.setValueAtTime(0, t0);
+  param.linearRampToValueAtTime(p, t0 + a);
+  param.exponentialRampToValueAtTime(Math.max(SILENCE, p * sustain), t0 + a + d);
+  return t0 + a + d;
+}
+
+/**
+ * Schedule a filter cutoff envelope: base → peak → sustain, in Hz.
+ *
+ * Deliberately separate from the amplitude version. Reusing that one here
+ * started the cutoff at 0.0001 Hz, which is a closed filter passing nothing,
+ * so every note began muted and then snapped open — a transient in its own
+ * right, and a degenerate biquad while it lasted.
+ */
+export function applyFilterEnv(
+  param: AudioParam,
+  t0: number,
+  base: number,
+  peak: number,
+  attack: number,
+  decay: number,
+  sustain: number,
+): number {
+  const a = Math.max(0.0005, attack);
+  const d = Math.max(0.001, decay);
+  const lo = Math.max(10, base);
+  const hi = Math.max(10, peak);
+  const sus = Math.max(10, lo + (hi - lo) * sustain);
+  param.cancelScheduledValues(t0);
+  param.setValueAtTime(lo, t0);
+  param.exponentialRampToValueAtTime(hi, t0 + a);
   param.exponentialRampToValueAtTime(sus, t0 + a + d);
   return t0 + a + d;
 }
@@ -232,8 +275,8 @@ export function adsrValueAt(
   const d = Math.max(0.001, decay);
   const p = Math.max(SILENCE, peak);
   if (t <= t0) return SILENCE;
-  // Attack and decay are exponential ramps, so interpolate geometrically.
-  if (t < t0 + a) return SILENCE * Math.pow(p / SILENCE, (t - t0) / a);
+  // Matches applyAttackDecay: linear attack, exponential decay.
+  if (t < t0 + a) return Math.max(SILENCE, p * ((t - t0) / a));
   const sus = Math.max(SILENCE, p * sustain);
   if (t < t0 + a + d) return p * Math.pow(sus / p, (t - t0 - a) / d);
   return sus;

@@ -10,7 +10,9 @@
 
 import type { SynthParams, SynthEngine } from '@shared/types';
 import { clamp, mtof, unisonCents } from '@shared/theory';
-import { saturationCurve, applyAttackDecay, applyRelease, adsrValueAt, SILENCE } from './dsp';
+import {
+  saturationCurve, applyAttackDecay, applyFilterEnv, applyRelease, adsrValueAt, SILENCE,
+} from './dsp';
 
 export interface VoiceOptions {
   ctx: AudioContext;
@@ -92,10 +94,9 @@ export class SynthVoice {
     const trackMul = Math.pow(2, (p.keyTrack * (baseMidi - 60)) / 12);
     const baseCut = clamp(p.cutoff * trackMul, 30, 20000);
     const peakCut = clamp(baseCut * Math.pow(2, p.filterEnv), 30, 20000);
-    applyAttackDecay(
-      this.filter.frequency, time, peakCut,
-      p.filt.attack, p.filt.decay,
-      clamp((baseCut + (peakCut - baseCut) * p.filt.sustain) / peakCut, 0.001, 1),
+    applyFilterEnv(
+      this.filter.frequency, time, baseCut, peakCut,
+      p.filt.attack, p.filt.decay, p.filt.sustain,
     );
 
     // --- oscillator stack -------------------------------------------------
@@ -176,7 +177,9 @@ export class SynthVoice {
     if (p.drive > 0.01) {
       const shaper = ctx.createWaveShaper();
       shaper.curve = saturationCurve(p.drive);
-      shaper.oversample = '2x';
+      // 4x, not 2x: saturation generates harmonics well above the input's own
+      // bandwidth, and anything past Nyquist folds back as inharmonic grit.
+      shaper.oversample = '4x';
       tail.connect(shaper);
       tail = shaper;
     }
