@@ -92,27 +92,36 @@ function kick(h: HitContext): number {
   osc.start(time);
   osc.stop(end);
 
-  // Beater transient: a short noise burst sitting above the body.
+  // Beater transient: a pitched partial above the body, not a noise burst.
   //
-  // Its band has to track the tuning. Pinned at a fixed 1.2 kHz it fuses into
-  // a default kick, but tune the drum down and the body moves away underneath
-  // it, leaving the burst alone in its own register where it stops reading as
-  // part of the drum and starts reading as a click on the front of it. Bounded
-  // at both ends, so it stays a thump rather than a tick.
+  // Noise is the wrong primitive here. White noise is uncorrelated sample to
+  // sample — maximal discontinuity by construction — so a short burst of it on
+  // the front of a kick reads as a tick whatever band it is filtered into. No
+  // envelope shaping fixes that, because the roughness is the signal.
+  //
+  // The analogue drums this is modelled on have no noise layer in the kick at
+  // all: the attack comes from the trigger pulse exciting the same oscillator.
+  // A fast partial sweeping down toward the body gives the same sense of a
+  // beater striking, stays band-limited, and is spectrally part of the drum
+  // rather than a separate event laid on top of it.
   if (p.snap > 0.01) {
     const clickEnd = time + 0.03;
-    const n = noiseSource(ctx, time, clickEnd);
-    const hp = ctx.createBiquadFilter();
-    hp.type = 'highpass';
-    hp.frequency.value = clamp(base * 7, 180, 3000);
+    const click = ctx.createOscillator();
+    click.type = 'triangle';
+    click.frequency.setValueAtTime(clamp(base * 11, 200, 9000), time);
+    click.frequency.exponentialRampToValueAtTime(clamp(base * 3, 100, 4000), time + 0.009);
+
     const lp = ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.value = clamp(base * 55, 1500, 12000);
+    lp.frequency.value = clamp(base * 45, 1200, 14000);
+
     const cg = ctx.createGain();
     cg.gain.value = 0;
-    // 1.5 ms rather than 0.5: still a transient, without a near-vertical edge.
-    percEnv(cg.gain, time, v * p.snap * 0.5, 0.012, 0.0015);
-    n.connect(hp).connect(lp).connect(cg).connect(dest);
+    percEnv(cg.gain, time, v * p.snap * 0.4, 0.009, 0.0012);
+
+    click.connect(cg).connect(lp).connect(dest);
+    click.start(time);
+    click.stop(clickEnd);
   }
 
   return end;
