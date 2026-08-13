@@ -121,19 +121,43 @@ export function Knob({
 // ---------------------------------------------------------------------------
 
 export function Slider({
-  label, value, min, max, step = 0.01, onChange, format, hint,
+  label, value, min, max, step = 0.01, onChange, format, hint, log = false, inert,
 }: {
   label: string; value: number; min: number; max: number; step?: number;
   onChange: (v: number) => void; format?: (v: number) => string; hint?: string;
+  /**
+   * Logarithmic travel. Essential for anything measured in time or Hz: on a
+   * linear slider from 1 ms to 3 s, everything under 200 ms — which is most of
+   * what music needs — is squeezed into the first 7% of the track.
+   */
+  log?: boolean;
+  /** Why this control currently does nothing, if it doesn't. */
+  inert?: string | null;
 }) {
   const help = hint ?? PARAM_HELP[label];
+  const title = [
+    `${label}${help ? ` — ${help}` : ''}`,
+    inert ? `\nNo effect right now: ${inert}` : '',
+  ].join('');
+
+  // Log sliders drive the input in normalised 0..1 space and convert on the way
+  // in and out, so the underlying value keeps its real units.
+  const toNorm = (v: number) => (log ? invExpScale(v, min, max) : (v - min) / (max - min));
+  const fromNorm = (n: number) => (log ? expScale(n, min, max) : min + n * (max - min));
+
   return (
-    <div className="slider-row" title={help ? `${label} — ${help}` : label}>
+    <div className="slider-row" title={title} style={inert ? { opacity: 0.42 } : undefined}>
       <label>{label}</label>
       <input
         type="range"
-        min={min} max={max} step={step} value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        min={log ? 0 : min}
+        max={log ? 1 : max}
+        step={log ? 0.001 : step}
+        value={log ? toNorm(value) : value}
+        onChange={(e) => {
+          const raw = Number(e.target.value);
+          onChange(log ? fromNorm(raw) : raw);
+        }}
       />
       <span className="val">{format ? format(value) : value.toFixed(2)}</span>
     </div>

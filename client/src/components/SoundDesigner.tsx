@@ -294,7 +294,8 @@ function SynthControls({ trackId }: { trackId: string }) {
           <div className="panel-title" style={{ marginBottom: 8 }}>Envelopes</div>
           <div className="row" style={{ gap: 16, alignItems: 'flex-start' }}>
             <EnvBlock label="Amp" prefix="amp" trackId={trackId} env={p.amp} color={track.color} />
-            <EnvBlock label="Filter" prefix="filt" trackId={trackId} env={p.filt} color="var(--accent)" />
+            <EnvBlock label="Filter" prefix="filt" trackId={trackId} env={p.filt} color="var(--accent)"
+              envDepth={p.filterEnv} />
           </div>
         </div>
       </div>
@@ -303,26 +304,50 @@ function SynthControls({ trackId }: { trackId: string }) {
 }
 
 function EnvBlock({
-  label, prefix, trackId, env, color,
+  label, prefix, trackId, env, color, envDepth,
 }: {
   label: string; prefix: 'amp' | 'filt'; trackId: string;
   env: { attack: number; decay: number; sustain: number; release: number };
   color: string;
+  /** Filter envelope depth in octaves. At zero the whole envelope is inert. */
+  envDepth?: number;
 }) {
   const set = useStore((s) => s.updateSynthParam);
+
+  // Only two conditions make a control provably do nothing regardless of how
+  // long a note is held, so those are the only two we claim.
+  const depthDead = envDepth !== undefined && Math.abs(envDepth) < 0.01
+    ? 'the filter envelope depth (Env amt) is zero'
+    : null;
+  const decayDead = depthDead ?? (env.sustain >= 0.999
+    ? 'sustain is at 100%, so the envelope never falls from its peak'
+    : null);
+
   return (
     <div className="grow">
       <div className="dim" style={{ fontSize: 9.5, marginBottom: 5, letterSpacing: '0.07em' }}>
         {label.toUpperCase()}
       </div>
-      <Slider label="A" min={0.001} max={3} step={0.001} value={env.attack} format={ms}
+      {/* Time controls travel logarithmically: equal movement is an equal
+          ratio, which is how the ear judges duration. On a linear track from
+          1 ms to 3 s everything under 200 ms lived in the first 7%. */}
+      <Slider label="A" min={0.0005} max={2} log value={env.attack} format={ms}
+        inert={depthDead}
         onChange={(v) => set(trackId, `${prefix}.attack`, v)} />
-      <Slider label="D" min={0.005} max={4} step={0.005} value={env.decay} format={ms}
+      <Slider label="D" min={0.002} max={4} log value={env.decay} format={ms}
+        inert={decayDead}
         onChange={(v) => set(trackId, `${prefix}.decay`, v)} />
       <Slider label="S" min={0} max={1} step={0.01} value={env.sustain} format={pct}
+        inert={depthDead}
         onChange={(v) => set(trackId, `${prefix}.sustain`, v)} />
-      <Slider label="R" min={0.005} max={5} step={0.005} value={env.release} format={ms}
+      <Slider label="R" min={0.002} max={4} log value={env.release} format={ms}
+        inert={depthDead}
         onChange={(v) => set(trackId, `${prefix}.release`, v)} />
+      {(decayDead || depthDead) && (
+        <div className="hint" style={{ marginTop: 3, color: 'var(--warm)' }}>
+          Greyed controls do nothing right now — {depthDead ?? decayDead}.
+        </div>
+      )}
     </div>
   );
 }
