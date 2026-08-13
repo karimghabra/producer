@@ -10,7 +10,7 @@
 
 import type { SynthParams, SynthEngine } from '@shared/types';
 import { clamp, mtof, unisonCents } from '@shared/theory';
-import { saturationCurve, applyAttackDecay, applyRelease, SILENCE } from './dsp';
+import { saturationCurve, applyAttackDecay, applyRelease, adsrValueAt, SILENCE } from './dsp';
 
 export interface VoiceOptions {
   ctx: AudioContext;
@@ -61,6 +61,9 @@ export class SynthVoice {
   private amp: GainNode;
   private filter: BiquadFilterNode;
   private pitchNodes: AudioParam[] = [];
+  /** Envelope peak, kept so a future release can be anchored correctly. */
+  private peak = 0;
+  private modPeak = 0;
 
   constructor(opts: VoiceOptions) {
     const { ctx, dest, engine, params: p, midi, velocity, time } = opts;
@@ -140,10 +143,10 @@ export class SynthVoice {
       const mg = ctx.createGain();
       // Modulation index is expressed in multiples of the carrier frequency,
       // so the timbre stays consistent as you play up and down the keyboard.
-      const peak = freq * clamp(p.fmIndex, 0, 24);
-      mg.gain.setValueAtTime(peak, time);
+      this.modPeak = freq * clamp(p.fmIndex, 0, 24);
+      mg.gain.setValueAtTime(this.modPeak, time);
       mg.gain.exponentialRampToValueAtTime(
-        Math.max(SILENCE, peak * clamp(p.filt.sustain, 0.01, 1)),
+        Math.max(SILENCE, this.modPeak * clamp(p.filt.sustain, 0.01, 1)),
         time + Math.max(0.01, p.filt.decay),
       );
       mod.connect(mg).connect(carrier.frequency);
@@ -182,8 +185,8 @@ export class SynthVoice {
     this.amp.connect(dest);
 
     // --- amplitude envelope ------------------------------------------------
-    const peak = clamp(velocity, 0, 1.4) * 0.5;
-    applyAttackDecay(this.amp.gain, time, peak, p.amp.attack, p.amp.decay, p.amp.sustain);
+    this.peak = clamp(velocity, 0, 1.4) * 0.5;
+    applyAttackDecay(this.amp.gain, time, this.peak, p.amp.attack, p.amp.decay, p.amp.sustain);
   }
 
   /** Re-pitch a sustaining voice (used by note-repeat pitch ramps). */
@@ -193,14 +196,26 @@ export class SynthVoice {
     }
   }
 
+  /** Level of the amp envelope at `t`, used to anchor a release smoothly. */
+  private ampLevelAt(t: number): number {
+    const a = this.params.amp;
+    return adsrValueAt(t, this.startTime, this.peak, a.attack, a.decay, a.sustain);
+  }
+
   /** Begin the release stage. Returns the time the voice is fully silent. */
   release(time: number): number {
     if (this.released) return this.endTime;
     this.released = true;
     const t = Math.max(time, this.startTime + 0.001);
     const r = Math.max(0.01, this.params.amp.release);
-    applyRelease(this.amp.gain, t, r);
-    if (this.modGain) applyRelease(this.modGain.gain, t, r);
+    applyRelease(this.amp.gain, t, r, this.ampLevelAt(t));
+    if (this.modGain) {
+      const f = this.params.filt;
+      applyRelease(
+        this.modGain.gain, t, r,
+        adsrValueAt(t, this.startTime, this.modPeak, 0.0005, f.decay, f.sustain),
+      );
+    }
     this.endTime = t + r + 0.02;
     this.stopAt(this.endTime);
     return this.endTime;
@@ -210,7 +225,9 @@ export class SynthVoice {
   kill(time: number): number {
     const t = Math.max(time, this.startTime + 0.001);
     this.released = true;
-    applyRelease(this.amp.gain, t, 0.012);
+    // Still a real ramp, not a jump: 12 ms is short enough to free the voice
+    // immediately and long enough not to click.
+    applyRelease(this.amp.gain, t, 0.012, this.ampLevelAt(t));
     this.endTime = t + 0.04;
     this.stopAt(this.endTime);
     return this.endTime;

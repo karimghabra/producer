@@ -211,12 +211,41 @@ export function applyAttackDecay(
   return t0 + a + d;
 }
 
-/** Schedule a release from wherever the param currently is. */
-export function applyRelease(param: AudioParam, t: number, release: number): number {
+/**
+ * Where an attack/decay/sustain envelope actually is at time `t`.
+ *
+ * Needed because `AudioParam.value` reports the value *now*, not at some future
+ * scheduled time — and the sequencer schedules note-offs up to a lookahead
+ * ahead of the clock. Anchoring a release to `param.value` therefore stamps the
+ * wrong level and produces a step discontinuity: an audible click on every
+ * note. `cancelAndHoldAtTime` is not a substitute; it inserts nothing when no
+ * events remain after `t`, which makes the release start from the end of the
+ * decay and cuts the note short.
+ *
+ * We scheduled every breakpoint ourselves, so the value is exactly computable.
+ */
+export function adsrValueAt(
+  t: number, t0: number, peak: number,
+  attack: number, decay: number, sustain: number,
+): number {
+  const a = Math.max(0.0005, attack);
+  const d = Math.max(0.001, decay);
+  const p = Math.max(SILENCE, peak);
+  if (t <= t0) return SILENCE;
+  // Attack and decay are exponential ramps, so interpolate geometrically.
+  if (t < t0 + a) return SILENCE * Math.pow(p / SILENCE, (t - t0) / a);
+  const sus = Math.max(SILENCE, p * sustain);
+  if (t < t0 + a + d) return p * Math.pow(sus / p, (t - t0 - a) / d);
+  return sus;
+}
+
+/** Schedule a release starting from an explicitly supplied level. */
+export function applyRelease(
+  param: AudioParam, t: number, release: number, from: number,
+): number {
   const r = Math.max(0.005, release);
   param.cancelScheduledValues(t);
-  // Hold the current value so cancelling does not snap us back to the start.
-  param.setValueAtTime(Math.max(SILENCE, param.value), t);
+  param.setValueAtTime(Math.max(SILENCE, from), t);
   param.exponentialRampToValueAtTime(SILENCE, t + r);
   return t + r;
 }

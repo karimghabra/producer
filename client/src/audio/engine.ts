@@ -35,6 +35,11 @@ interface Channel {
   delaySend: GainNode;
   /** Sidechain depth, mirrored from the mixer for fast access. */
   duckAmount: number;
+  /** State of the duck curve in flight, so a new duck can start from the
+   *  level the old one will actually have reached. */
+  duckStart: number;
+  duckFrom: number;
+  duckAmt: number;
   voices: SynthVoice[];
   /** Last note played, for portamento. */
   lastMidi: number | null;
@@ -257,7 +262,8 @@ export class AudioEngine {
 
     const ch: Channel = {
       id, input, duck, panner, fader, dry, reverbSend, delaySend,
-      duckAmount: 0, voices: [], lastMidi: null,
+      duckAmount: 0, duckStart: -1, duckFrom: 1, duckAmt: 0,
+      voices: [], lastMidi: null,
     };
     this.channels.set(id, ch);
     return ch;
@@ -360,8 +366,17 @@ export class AudioEngine {
       const a = ch.duckAmount;
       if (a < 0.01) continue;
       const g = ch.duck.gain;
+      // Anchor to where the previous duck will actually be at `time`, not to
+      // gain.value — that reports the level now, and `time` is up to a
+      // lookahead in the future. Stamping the wrong level here steps the gain
+      // and clicks on every kick.
+      const from = this.duckLevelAt(ch, time);
+      ch.duckStart = time;
+      ch.duckFrom = from;
+      ch.duckAmt = a;
+
       g.cancelScheduledValues(time);
-      g.setValueAtTime(g.value, time);
+      g.setValueAtTime(from, time);
       g.linearRampToValueAtTime(1 - a, time + Math.max(0.0005, atk));
       const t0 = time + atk;
       for (let i = 1; i <= SEGMENTS; i++) {
@@ -370,6 +385,19 @@ export class AudioEngine {
         g.linearRampToValueAtTime(v, t0 + rel * x);
       }
     }
+  }
+
+  /** Where a channel's duck curve reaches by time `t`. */
+  private duckLevelAt(ch: Channel, t: number): number {
+    if (ch.duckStart < 0) return 1;
+    const { sidechainAttack: atk, sidechainRelease: rel, sidechainCurve: curve } = this.master;
+    const e = t - ch.duckStart;
+    const a = ch.duckAmt;
+    if (e <= 0) return ch.duckFrom;
+    if (e < atk) return ch.duckFrom + (1 - a - ch.duckFrom) * (e / atk);
+    const x = (e - atk) / Math.max(0.001, rel);
+    if (x >= 1) return 1;
+    return 1 - a * Math.pow(1 - x, curve);
   }
 
   // -------------------------------------------------------------------------
