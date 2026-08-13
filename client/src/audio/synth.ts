@@ -11,7 +11,8 @@
 import type { SynthParams, SynthEngine } from '@shared/types';
 import { clamp, mtof, unisonCents } from '@shared/theory';
 import {
-  saturationCurve, applyAttackDecay, applyFilterEnv, applyRelease, adsrValueAt, SILENCE,
+  saturationCurve, softClipCurve, applyAttackDecay, applyFilterEnv, applyRelease,
+  adsrValueAt, SILENCE,
 } from './dsp';
 
 export interface VoiceOptions {
@@ -61,6 +62,7 @@ export class SynthVoice {
   private modOsc: OscillatorNode | null = null;
   private modGain: GainNode | null = null;
   private amp: GainNode;
+  private bound: WaveShaperNode | null = null;
   private filter: BiquadFilterNode;
   private pitchNodes: AudioParam[] = [];
   /** Envelope peak, kept so a future release can be anchored correctly. */
@@ -186,7 +188,16 @@ export class SynthVoice {
     }
 
     tail.connect(this.amp);
-    this.amp.connect(dest);
+
+    // Bound the voice at its own output. Unison count, the sub oscillator and
+    // filter resonance all stack multiplicatively, so some corner of the
+    // parameter space will always exceed full scale. Below the knee this is a
+    // straight wire, so ordinary patches pass through untouched.
+    const bound = ctx.createWaveShaper();
+    bound.curve = softClipCurve(0.7);
+    this.amp.connect(bound);
+    bound.connect(dest);
+    this.bound = bound;
 
     // --- amplitude envelope ------------------------------------------------
     this.peak = clamp(velocity, 0, 1.4) * 0.5;
@@ -249,7 +260,7 @@ export class SynthVoice {
     // Detach once silent so the graph does not accumulate dead branches.
     const ms = Math.max(0, (t - this.ctx.currentTime) * 1000) + 60;
     setTimeout(() => {
-      try { this.amp.disconnect(); } catch { /* gone */ }
+      try { this.amp.disconnect(); this.bound?.disconnect(); } catch { /* gone */ }
     }, ms);
   }
 }

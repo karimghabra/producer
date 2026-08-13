@@ -12,7 +12,7 @@
 
 import type { DrumParams, DrumEngine } from '@shared/types';
 import { clamp } from '@shared/theory';
-import { whiteNoise, percEnv, saturationCurve, SILENCE } from './dsp';
+import { whiteNoise, percEnv, saturationCurve, softClipCurve, SILENCE } from './dsp';
 
 export interface HitContext {
   ctx: AudioContext;
@@ -92,17 +92,27 @@ function kick(h: HitContext): number {
   osc.start(time);
   osc.stop(end);
 
-  // Transient click — a very short noise burst high-passed well above the body.
+  // Beater transient: a short noise burst sitting above the body.
+  //
+  // Its band has to track the tuning. Pinned at a fixed 1.2 kHz it fuses into
+  // a default kick, but tune the drum down and the body moves away underneath
+  // it, leaving the burst alone in its own register where it stops reading as
+  // part of the drum and starts reading as a click on the front of it. Bounded
+  // at both ends, so it stays a thump rather than a tick.
   if (p.snap > 0.01) {
     const clickEnd = time + 0.03;
     const n = noiseSource(ctx, time, clickEnd);
     const hp = ctx.createBiquadFilter();
     hp.type = 'highpass';
-    hp.frequency.value = 1200;
+    hp.frequency.value = clamp(base * 7, 180, 3000);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = clamp(base * 55, 1500, 12000);
     const cg = ctx.createGain();
     cg.gain.value = 0;
-    percEnv(cg.gain, time, v * p.snap * 0.5, 0.012, 0.0005);
-    n.connect(hp).connect(cg).connect(dest);
+    // 1.5 ms rather than 0.5: still a transient, without a near-vertical edge.
+    percEnv(cg.gain, time, v * p.snap * 0.5, 0.012, 0.0015);
+    n.connect(hp).connect(lp).connect(cg).connect(dest);
   }
 
   return end;
@@ -345,16 +355,30 @@ const VOICES: Record<DrumEngine, (h: HitContext) => number> = {
  */
 const HEADROOM = 0.82;
 
-/** Fire one drum hit. Returns the time the voice finishes. */
+/**
+ * Fire one drum hit. Returns the time the voice finishes.
+ *
+ * Every voice is summed, trimmed and then bounded. The bound matters because a
+ * voice's layers — tone body, noise, transient — are parallel branches, and the
+ * drive stage normalises its own branch toward full scale independently. Two
+ * near-unity branches sum past one, which fuzzing across the parameter space
+ * hit on 11% of random settings, worst case 1.30. Clipping the sum makes that
+ * unreachable for any combination of knob positions rather than for the
+ * combinations someone happened to test.
+ */
 export function triggerDrum(engine: DrumEngine, h: HitContext): number {
   const voice = VOICES[engine] ?? kick;
   const trim = h.ctx.createGain();
   trim.gain.value = HEADROOM;
-  trim.connect(h.dest);
+  const bound = h.ctx.createWaveShaper();
+  bound.curve = softClipCurve(0.7);
+  trim.connect(bound).connect(h.dest);
   const end = voice({ ...h, dest: trim, velocity: clamp(h.velocity, 0, 1.4) });
   // Detach once the voice is silent so the graph does not accumulate.
   const ms = Math.max(0, (end - h.ctx.currentTime) * 1000) + 250;
-  setTimeout(() => { try { trim.disconnect(); } catch { /* gone */ } }, ms);
+  setTimeout(() => {
+    try { trim.disconnect(); bound.disconnect(); } catch { /* gone */ }
+  }, ms);
   return end;
 }
 

@@ -116,3 +116,108 @@ export async function scanAll(): Promise<ScanResult[]> {
 export async function scanForClipping(): Promise<ScanResult[]> {
   return (await scanAll()).filter((r) => r.peak >= 1);
 }
+
+// ---------------------------------------------------------------------------
+// Fuzzing
+// ---------------------------------------------------------------------------
+
+const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
+const oneOf = <T,>(xs: readonly T[]): T => xs[Math.floor(Math.random() * xs.length)];
+
+const DRUM_ENGINES = ['kick', 'snare', 'clap', 'hat', 'cymbal', 'tom', 'rim', 'noise'] as const;
+const SYNTH_ENGINES = ['supersaw', 'reese', 'fm', 'sub', 'pluck', 'pad'] as const;
+
+export interface FuzzReport {
+  tested: number;
+  clipping: number;
+  clippingRate: string;
+  worstPeak: number;
+  medianPeak: number;
+  /** Parameter averages for the runs that clipped, versus those that did not. */
+  profile: Record<string, Record<string, number | null>>;
+}
+
+/**
+ * Render random points from the whole parameter space and look for peaks at or
+ * above full scale.
+ *
+ * Presets only cover the settings someone chose. Fuzzing covers the settings a
+ * user can reach with the knobs, which is the set that actually has to be safe.
+ * Comparing the parameter averages of the runs that clipped against those that
+ * did not points at the mechanism rather than just the symptom — it is how the
+ * summed-parallel-branches problem was found, with drive and noise both high in
+ * the clipping group while resonance was, counter-intuitively, lower.
+ *
+ *   const { fuzzForClipping } = await import('/src/dev/clickScan.ts');
+ *   await fuzzForClipping(80);
+ */
+export async function fuzzForClipping(runs = 60): Promise<FuzzReport> {
+  const SR = 24000;
+  const T = 0.02;
+  const peaks: number[] = [];
+  const params: Array<Record<string, number>> = [];
+
+  for (let i = 0; i < runs; i++) {
+    const drum = i % 2 === 0;
+    const ctx = new OfflineAudioContext(1, SR * 1.2, SR);
+    let p: Record<string, number>;
+
+    if (drum) {
+      p = {
+        tune: rand(20, 1200), decay: rand(0.02, 1.5), pitchMod: rand(0, 48),
+        pitchTime: rand(0.002, 0.4), noise: rand(0, 1), drive: rand(0, 1),
+        cutoff: rand(60, 20000), resonance: rand(0.1, 18), snap: rand(0, 1),
+      };
+      triggerDrum(oneOf(DRUM_ENGINES), {
+        ctx: ctx as unknown as AudioContext, dest: ctx.destination, time: T,
+        params: p as never, velocity: 1, semis: 0,
+      });
+    } else {
+      p = {
+        voices: Math.round(rand(1, 9)), detune: rand(0, 1), spread: rand(0, 1),
+        octave: Math.round(rand(-3, 3)), sub: rand(0, 1), fmRatio: rand(0.25, 16),
+        fmIndex: rand(0, 16), cutoff: rand(30, 20000), resonance: rand(0.1, 28),
+        filterEnv: rand(-4, 5), keyTrack: rand(0, 1), drive: rand(0, 1), glide: 0,
+      };
+      const voice = new SynthVoice({
+        ctx: ctx as unknown as AudioContext, dest: ctx.destination,
+        engine: oneOf(SYNTH_ENGINES),
+        params: {
+          ...p,
+          filterType: 'lowpass',
+          amp: { attack: rand(0.001, 0.3), decay: rand(0.01, 1), sustain: rand(0, 1), release: rand(0.01, 0.5) },
+          filt: { attack: rand(0.001, 0.3), decay: rand(0.01, 1), sustain: rand(0, 1), release: rand(0.01, 0.5) },
+        } as never,
+        midi: Math.round(rand(33, 81)), velocity: 1, time: T, glideFrom: null,
+      });
+      voice.release(T + 0.3);
+    }
+
+    const d = (await ctx.startRendering()).getChannelData(0);
+    let peak = 0;
+    for (let j = 0; j < d.length; j++) peak = Math.max(peak, Math.abs(d[j]));
+    peaks.push(peak);
+    params.push(p);
+  }
+
+  const clipped = params.filter((_, i) => peaks[i] >= 1);
+  const clean = params.filter((_, i) => peaks[i] < 1);
+  const avg = (rows: Array<Record<string, number>>, key: string) => {
+    const vals = rows.map((r) => r[key]).filter((v) => typeof v === 'number');
+    return vals.length ? Number((vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2)) : null;
+  };
+  const keys = ['drive', 'noise', 'resonance', 'snap', 'sub', 'voices'];
+  const sorted = peaks.slice().sort((a, b) => a - b);
+
+  return {
+    tested: runs,
+    clipping: peaks.filter((p) => p >= 1).length,
+    clippingRate: `${Math.round((peaks.filter((p) => p >= 1).length / runs) * 100)}%`,
+    worstPeak: Number(Math.max(...peaks).toFixed(3)),
+    medianPeak: Number(sorted[Math.floor(sorted.length / 2)].toFixed(3)),
+    profile: {
+      clipping: Object.fromEntries(keys.map((k) => [k, avg(clipped, k)])),
+      clean: Object.fromEntries(keys.map((k) => [k, avg(clean, k)])),
+    },
+  };
+}
