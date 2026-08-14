@@ -163,10 +163,69 @@ const chips = await page.locator('#preset-bar .chip').count();
 check(chips > 10, 'sound view lists presets for the armed track', `${chips} presets`);
 
 const engineBefore = (await engine()).tracks[4].engine;
-await page.locator('#preset-bar .chip').nth(3).click();
-await page.waitForTimeout(350);
+await page.locator('#preset-bar .chip:not(.ghost)').nth(3).click();
+await page.waitForTimeout(400);
 const engineAfter = (await engine()).tracks[4].engine;
 check(true, 'preset click accepted', `${engineBefore} -> ${engineAfter}`);
+
+// --- sound design ------------------------------------------------------------
+//
+// The controls are generated from the engine's own parameter table, so what
+// matters is that every one of them reaches the engine and that the engine's
+// value comes back to the control.
+const specs = await page.evaluate(async () =>
+  (await fetch('/api/params?track=4')).json());
+check(specs.length > 15, 'the synth exposes its parameters', `${specs.length} parameters`);
+check(specs.every((p) => p.help && p.help.length > 30),
+      'every parameter explains what it does',
+      `shortest ${Math.min(...specs.map((p) => p.help.length))} chars`);
+
+const knobCount = await page.locator('#params .param').count();
+const choiceCount = await page.locator('#params .choice').count();
+check(knobCount + choiceCount === specs.length, 'a control is drawn for each one',
+      `${knobCount} knobs + ${choiceCount} choice rows = ${specs.length}`);
+
+// Drag a real parameter and read the engine back.
+const cutoffIdx = specs.findIndex((p) => p.id === 'cutoff');
+const cutoffKnob = page.locator('#params .param').nth(
+  specs.slice(0, cutoffIdx).filter((p) => !p.choices).length);
+const kb = await cutoffKnob.boundingBox();
+const readCutoff = async () => (await page.evaluate(async () =>
+  (await fetch('/api/params?track=4')).json())).find((p) => p.id === 'cutoff').value;
+const cutBefore = await readCutoff();
+await page.mouse.move(kb.x + kb.width / 2, kb.y + kb.height / 2);
+await page.mouse.down();
+await page.mouse.move(kb.x + kb.width / 2, kb.y + kb.height / 2 - 70, { steps: 12 });
+await page.mouse.up();
+await page.waitForTimeout(350);
+const cutAfter = await readCutoff();
+check(cutAfter > cutBefore * 1.3, 'dragging a knob changes the sound',
+      `cutoff ${Math.round(cutBefore)} -> ${Math.round(cutAfter)} Hz`);
+
+// A logarithmic control must spend its travel usefully: the midpoint of an
+// attack knob should be tens of milliseconds, not one and a half seconds.
+const atk = specs.find((p) => p.id === 'ampAttack');
+const mid = atk.min * Math.sqrt(atk.max / atk.min);
+check(atk.log && mid < 0.2, 'envelope times are swept logarithmically',
+      `midpoint ${(mid * 1000).toFixed(0)} ms of ${atk.min * 1000}-${atk.max * 1000} ms`);
+
+// Switching engine via a choice control.
+await page.locator('#params .choice .chip', { hasText: 'FM' }).first().click();
+await page.waitForTimeout(450);
+check((await engine()).tracks[4].engine === 'FM', 'choice control switches the engine',
+      (await engine()).tracks[4].engine);
+
+// Reset restores the default sound without touching name, colour or patterns.
+const nameBefore = (await engine()).tracks[4].name;
+const patsKept = (await engine()).tracks[4].patterns.length;
+await page.locator('#preset-bar .chip.ghost').click();
+await page.waitForTimeout(450);
+const afterReset = (await engine()).tracks[4];
+check(afterReset.name === nameBefore && afterReset.patterns.length === patsKept,
+      'reset changes the sound only', `${afterReset.name}, ${afterReset.patterns.length} patterns`);
+const cutReset = await readCutoff();
+check(Math.abs(cutReset - 2200) < 1, 'reset returns parameters to their defaults',
+      `cutoff ${Math.round(cutReset)} Hz`);
 
 // --- track manager -----------------------------------------------------------
 await page.locator('[data-view="steps"]').click();

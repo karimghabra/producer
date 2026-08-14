@@ -75,6 +75,7 @@ target_sources(Motif PRIVATE
     src/music/Quantizer.cpp
     src/music/Song.cpp
     src/music/Presets.cpp
+    src/music/Params.cpp
     src/net/Bridge.cpp
 )
 
@@ -128,6 +129,7 @@ add_executable(MotifTests
     src/music/Quantizer.cpp
     src/music/Song.cpp
     src/music/Presets.cpp
+    src/music/Params.cpp
     src/audio/Drums.cpp
     src/audio/Engine.cpp
 )

@@ -9,6 +9,7 @@
 #include <mutex>
 
 #include "audio/Engine.h"
+#include "music/Params.h"
 #include "music/Presets.h"
 #include "music/Song.h"
 
@@ -566,6 +567,40 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
         return true;
     }
 
+    // --- sound design -----------------------------------------------------
+
+    // Set by id and normalised position. The interface never needs to know a
+    // parameter's real range or curve - the table owns both, so a control
+     // cannot disagree with the engine about what it is editing.
+    if (type == "param") {
+        std::string id;
+        if (!field(body, "id", id)) { error = "missing id"; return false; }
+        bool found = false;
+        onTrack([&](Track& t, Song&) {
+            if (const ParamSpec* spec = findParam(t, id)) {
+                spec->set(t, float(spec->fromNorm(value)));
+                found = true;
+            }
+        });
+        if (!found) { error = "unknown parameter: " + id; return false; }
+        return true;
+    }
+
+    if (type == "resetSound") {
+        onTrack([&](Track& t, Song&) {
+            // Default-construct just the instrument, keeping the track's name,
+            // colour, patterns and mixer settings intact.
+            const bool drum = t.instrument.isDrum;
+            const DrumEngine de = t.instrument.drumEngine;
+            const SynthEngine se = t.instrument.synth.engine;
+            t.instrument = Instrument{};
+            t.instrument.isDrum = drum;
+            t.instrument.drumEngine = de;
+            t.instrument.synth.engine = se;
+        });
+        return true;
+    }
+
     if (type == "preset") {
         std::string name;
         if (!field(body, "name", name)) { error = "missing name"; return false; }
@@ -609,6 +644,48 @@ int Bridge::start(const std::string& webRoot, int preferredPort) {
     // is polled twenty times a second and this changes only when you record.
     server_->Get("/api/take", [this](const httplib::Request&, httplib::Response& res) {
         res.set_content(takeJson(), "application/json");
+    });
+
+    // The editable parameters of the armed track, with their current values.
+    //
+    // Descriptions travel with them: the controls are meaningless without
+    // knowing what they do, and hiding that in documentation nobody opens is
+    // how a synth ends up used only through its presets.
+    server_->Get("/api/params", [this](const httplib::Request& req, httplib::Response& res) {
+        const Song song = engine_.song();
+        int index = 0;
+        if (req.has_param("track")) index = std::atoi(req.get_param_value("track").c_str());
+        if (index < 0 || index >= int(song.tracks.size())) { res.set_content("[]", "application/json"); return; }
+
+        const Track& t = song.tracks[size_t(index)];
+        std::ostringstream j;
+        j << '[';
+        bool first = true;
+        for (const auto& p : paramsFor(t)) {
+            if (!first) j << ',';
+            first = false;
+            const double raw = p.get(t);
+            j << "{\"id\":\"" << p.id << "\""
+              << ",\"label\":\"" << esc(p.label) << "\""
+              << ",\"norm\":" << num(p.toNorm(raw), 4)
+              << ",\"value\":" << num(raw, 4)
+              << ",\"min\":" << num(p.min, 4)
+              << ",\"max\":" << num(p.max, 4)
+              << ",\"unit\":\"" << esc(p.unit) << "\""
+              << ",\"log\":" << (p.log ? "true" : "false")
+              << ",\"help\":\"" << esc(p.help) << "\"";
+            if (p.choices != nullptr) {
+                j << ",\"choices\":[";
+                for (int c = 0; c < p.choiceCount; ++c) {
+                    if (c) j << ',';
+                    j << '"' << esc(p.choices[c]) << '"';
+                }
+                j << ']';
+            }
+            j << '}';
+        }
+        j << ']';
+        res.set_content(j.str(), "application/json");
     });
 
     server_->Get("/api/presets", [](const httplib::Request&, httplib::Response& res) {

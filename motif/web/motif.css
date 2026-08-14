@@ -229,7 +229,22 @@ input[type=range]::-webkit-slider-thumb:active { cursor:grabbing; }
 .knob label { font-size:8px; letter-spacing:.08em; color:var(--dimmer); }
 .knob output { font:600 9.5px var(--mono); color:var(--dim); }
 
-.params { display:grid; grid-template-columns:repeat(auto-fill,minmax(74px,1fr)); gap:10px; }
+/* ---------- sound design ---------- */
+.bar-label { font:700 8.5px var(--sans); letter-spacing:.15em; color:var(--dimmer);
+             margin-right:4px; }
+.chip.small { padding:5px 9px; font-size:10px; }
+
+.params { display:flex; flex-wrap:wrap; gap:14px 12px; align-items:flex-start; }
+.param { width:66px; padding:7px 2px; border-radius:8px; cursor:ns-resize; }
+.param:hover { background:rgba(255,255,255,.03); }
+.param label { font-size:8px; letter-spacing:.09em; }
+.param output { font-size:10px; color:var(--text); }
+
+/* Discrete parameters span the row: the names are the control. */
+.choice { flex:1 1 100%; padding:2px 0 6px; }
+.choice > label { display:block; font:700 8.5px var(--sans); letter-spacing:.15em;
+                  color:var(--dimmer); margin-bottom:6px; }
+.choice-row { display:flex; gap:5px; flex-wrap:wrap; }
 
 /* ---------- keyboard ---------- */
 footer { padding:10px 14px; display:flex; align-items:center; gap:16px; }

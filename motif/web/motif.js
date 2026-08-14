@@ -483,20 +483,128 @@ function renderMix() {
   });
 }
 
+// The parameters of the armed track, fetched when the track or its instrument
+// changes rather than on every frame - they are only touched by this view.
+let params = [];
+let paramsKey = null;
+
+async function syncParams(force = false) {
+  const track = state.tracks[selected];
+  if (!track) return;
+  const key = `${selected}|${track.engine}|${track.isDrum}`;
+  if (!force && key === paramsKey) return;
+  paramsKey = key;
+  params = await (await fetch(`/api/params?track=${selected}`)).json();
+  if (view === 'sound') renderParams();
+}
+
 function renderSound() {
   const track = state.tracks[selected];
   if (!track) return;
   const list = track.isDrum ? presets.drums : presets.synths;
   const bar = $('#preset-bar');
   bar.innerHTML = '';
+
+  const label = document.createElement('span');
+  label.className = 'bar-label';
+  label.textContent = 'PRESETS';
+  bar.append(label);
+
   list.forEach((p) => {
     const b = document.createElement('button');
     b.className = 'chip';
     b.textContent = p.name;
     b.title = p.blurb;
-    b.onclick = () => api.send('preset', { track: selected, name: p.name });
+    b.onclick = async () => { api.send('preset', { track: selected, name: p.name });
+                              setTimeout(() => syncParams(true), 200); };
     bar.append(b);
   });
+
+  const reset = document.createElement('button');
+  reset.className = 'chip ghost';
+  reset.textContent = 'RESET';
+  reset.title = 'Back to the default sound for this engine';
+  reset.onclick = () => { api.send('resetSound', { track: selected });
+                          setTimeout(() => syncParams(true), 200); };
+  bar.append(reset);
+
+  renderParams();
+}
+
+/**
+ * The controls themselves, built from the engine's own parameter table.
+ *
+ * Nothing here knows what a cutoff is or what range it lives in. That means a
+ * control cannot drift out of step with the thing it edits, and a parameter
+ * added to the engine appears here without the interface being touched.
+ */
+function renderParams() {
+  const host = $('#params');
+  host.innerHTML = '';
+  if (!params.length) return;
+
+  for (const p of params) {
+    if (p.choices) { host.append(choiceControl(p)); continue; }
+
+    const send = (norm) => api.send('param', { track: selected, id: p.id, value: norm });
+    // A real colour, not var(--c): the knob is drawn into a canvas, and canvas
+    // has no idea what a CSS custom property is - it silently draws nothing.
+    const tint = hex(state.tracks[selected].colour);
+    const wrap = knob(p.label, p.norm, formatParam(p, p.value), tint, (v) => {
+      p.norm = v;
+      p.value = denorm(p, v);
+      wrap.querySelector('output').textContent = formatParam(p, p.value);
+      send(v);
+    });
+    wrap.classList.add('param');
+    // The explanation is the point. Hover on the control that raised the
+    // question, rather than in documentation nobody opens.
+    wrap.title = `${p.label}\n\n${p.help}`;
+    host.append(wrap);
+  }
+}
+
+/**
+ * Mirror of ParamSpec::fromNorm, so the readout tracks the drag.
+ *
+ * The engine still owns the mapping - this only decides what number to print
+ * between one round trip and the next, and the next poll overwrites it.
+ */
+function denorm(p, norm) {
+  const n = Math.min(1, Math.max(0, norm));
+  return p.log && p.min > 0 ? p.min * Math.pow(p.max / p.min, n)
+                            : p.min + n * (p.max - p.min);
+}
+
+function formatParam(p, value) {
+  if (Math.abs(value) >= 1000) return (value / 1000).toFixed(1) + 'k' + p.unit;
+  if (p.unit === 's') return value < 1 ? Math.round(value * 1000) + 'ms' : value.toFixed(2) + 's';
+  if (Math.abs(value) >= 100) return Math.round(value) + p.unit;
+  if (Math.abs(value) >= 10) return value.toFixed(1) + p.unit;
+  return value.toFixed(2).replace(/0$/, '') + p.unit;
+}
+
+/** Discrete parameters get named buttons; a knob would hide the names. */
+function choiceControl(p) {
+  const wrap = document.createElement('div');
+  wrap.className = 'choice';
+  wrap.title = `${p.label}\n\n${p.help}`;
+  wrap.innerHTML = `<label>${p.label}</label>`;
+  const row = document.createElement('div');
+  row.className = 'choice-row';
+  p.choices.forEach((name, i) => {
+    const b = document.createElement('button');
+    b.className = 'chip small' + (Math.round(p.value) === i ? ' on' : '');
+    b.textContent = name;
+    b.onclick = () => {
+      const norm = p.choices.length > 1 ? i / (p.choices.length - 1) : 0;
+      api.send('param', { track: selected, id: p.id, value: norm });
+      setTimeout(() => syncParams(true), 200);
+    };
+    row.append(b);
+  });
+  wrap.append(row);
+  return wrap;
 }
 
 const KEYS = [
@@ -576,6 +684,7 @@ function render() {
   // shrink as you pull it back.
   if (view === 'steps') renderTake();
   syncTake();
+  if (view === 'sound') syncParams();
 
   // Never restructure under a finger that is mid-gesture.
   if (interacting) return;
