@@ -25,29 +25,65 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
+# Single-header HTTP server. The UI is a web page driven over localhost, which
+# keeps the audio in C++ where it belongs while making the interface something
+# a browser - and Playwright - can actually drive and inspect.
+FetchContent_Declare(
+    httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG v0.18.3
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(httplib)
+
+# WebView2 headers and import library.
+#
+# JUCE looks for a NuGet package on disk. A .nupkg is a zip, so fetching and
+# extracting it keeps the build self-contained: no NuGet install, nothing for
+# anyone cloning this to do by hand.
+if (WIN32)
+    FetchContent_Declare(
+        webview2pkg
+        URL https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2792.45
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_DIR ${CMAKE_BINARY_DIR}/webview2/Microsoft.Web.WebView2
+    )
+    FetchContent_MakeAvailable(webview2pkg)
+    set(JUCE_WEBVIEW2_PACKAGE_LOCATION ${CMAKE_BINARY_DIR}/webview2
+        CACHE STRING "Where JUCE should look for the WebView2 package" FORCE)
+endif()
+
 juce_add_gui_app(Motif
     PRODUCT_NAME "Motif"
     COMPANY_NAME "Motif"
     VERSION ${PROJECT_VERSION}
+    # The interface is a web page rendered inside the app's own window via
+    # WebView2, which ships with Windows. One executable, one window, no
+    # browser - while the UI itself stays something that can be edited without
+    # a rebuild and driven by a test.
+    NEEDS_WEB_BROWSER TRUE
+    NEEDS_WEBVIEW2 TRUE
 )
 
 juce_generate_juce_header(Motif)
 
 target_sources(Motif PRIVATE
     src/Main.cpp
-    src/MainComponent.cpp
+    src/ShellComponent.cpp
     src/audio/Engine.cpp
     src/audio/Drums.cpp
     src/music/Quantizer.cpp
     src/music/Song.cpp
     src/music/Presets.cpp
+    src/net/Bridge.cpp
     src/ui/Theme.cpp
 )
 
 target_include_directories(Motif PRIVATE src)
 
 target_compile_definitions(Motif PRIVATE
-    JUCE_WEB_BROWSER=0
+    JUCE_WEB_BROWSER=1
+    JUCE_USE_WIN_WEBVIEW2=1
     JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Motif,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:Motif,JUCE_VERSION>"
@@ -56,6 +92,7 @@ target_compile_definitions(Motif PRIVATE
 )
 
 target_link_libraries(Motif PRIVATE
+    httplib::httplib
     juce::juce_audio_utils
     juce::juce_audio_devices
     juce::juce_gui_extra

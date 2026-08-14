@@ -39,7 +39,7 @@ const std::vector<DrumPreset>& drumPresets() {
         // kicks
         { "909 Kick",   "The house and techno standard. Punchy, gets out of the way.",
           DrumEngine::Kick,  drum(50, 0.45f, 28, 0.035f, 0, 0.35f, 8000, 0.7f, 0.50f) },
-        { "808 Boom",   "Long sub tail. Trap and hip-hop \xe2\x80\x94 sits under everything.",
+        { "808 Boom",   "Long sub tail. Trap and hip-hop - sits under everything.",
           DrumEngine::Kick,  drum(40, 1.40f, 20, 0.065f, 0, 0.18f, 5500, 0.5f, 0.22f) },
         { "Tech Thump", "Short and tight. Leaves room for a busy groove.",
           DrumEngine::Kick,  drum(55, 0.28f, 26, 0.022f, 0, 0.45f, 9000, 0.8f, 0.60f) },

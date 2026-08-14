@@ -9,6 +9,7 @@
 #include "audio/Engine.h"
 #include "music/Quantizer.h"
 #include "music/Song.h"
+#include "net/Bridge.h"
 
 namespace motif {
 
@@ -94,6 +95,8 @@ private:
     float pitchToY(int pitch) const;
 
     Engine engine_;
+    Bridge bridge_{ engine_ };
+    int bridgePort_ = 0;
     Song song_;
     FitOptions fitOptions_;
     Take take_;
@@ -113,7 +116,7 @@ private:
     std::array<bool, 128> noteSounding_{};
     int octaveOffset_ = 0;
 
-    juce::Rectangle<int> headerArea_, railArea_, mainArea_, stripArea_, keyboardArea_;
+    juce::Rectangle<int> headerArea_, railArea_, mainArea_, stripArea_, keyboardArea_, hintArea_;
     juce::Rectangle<int> recButton_, playButton_, keepButton_;
     std::array<juce::Rectangle<int>, kViewCount> viewTabs_;
     int selectedStep_ = -1;

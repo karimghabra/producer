@@ -1,0 +1,149 @@
+/* Motif — hand-written. No component library, so nothing here carries another
+   framework's signature. Amber is what you played, mint is where it landed;
+   that pairing runs through the whole interface. */
+
+:root {
+  --ink0:#070910; --ink1:#0e121b; --ink2:#161c29; --ink3:#1e2637;
+  --line:#222b3d; --line-soft:#192031;
+  --text:#e9eefb; --dim:#8593ad; --dimmer:#55607a;
+  --played:#ffb86b; --fitted:#5ee6c5; --hot:#ff5c7a; --gold:#ffd479; --violet:#c77dff;
+  --r:9px;
+  --mono:ui-monospace,"Cascadia Mono","JetBrains Mono",Consolas,monospace;
+  --sans:Inter,"Segoe UI",system-ui,sans-serif;
+}
+
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { height:100%; }
+body {
+  background:
+    radial-gradient(120% 80% at 55% 0%, #101725 0%, var(--ink0) 60%),
+    var(--ink0);
+  color:var(--text); font:13px/1.4 var(--sans);
+  -webkit-font-smoothing:antialiased; user-select:none; overflow:hidden;
+}
+button { font:inherit; color:inherit; background:none; border:none; cursor:pointer; }
+
+#app { display:grid; grid-template-rows:auto 1fr auto; height:100%; padding:14px; gap:12px; }
+
+/* ---------- header ---------- */
+header { display:flex; align-items:center; gap:18px; }
+h1 { font-size:22px; letter-spacing:.14em; font-weight:800; }
+
+.transport { display:flex; gap:7px; }
+.btn {
+  padding:9px 18px; border-radius:var(--r); background:var(--ink2);
+  border:1px solid var(--line); font-size:11.5px; font-weight:700; letter-spacing:.06em;
+  color:var(--dim); transition:.12s;
+}
+.btn:hover { border-color:#3a4761; color:var(--text); }
+.btn.on.hot   { background:rgba(255,92,122,.16); border-color:var(--hot); color:var(--hot);
+                box-shadow:0 0 0 1px rgba(255,92,122,.35),0 0 22px -6px var(--hot);
+                animation:pulse 1.3s infinite; }
+.btn.on.mint  { background:rgba(94,230,197,.14); border-color:var(--fitted); color:var(--fitted);
+                box-shadow:0 0 0 1px rgba(94,230,197,.3),0 0 22px -6px var(--fitted); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.62} }
+
+nav { display:flex; gap:3px; background:var(--ink1); padding:3px; border-radius:var(--r); }
+.tab { padding:7px 15px; border-radius:6px; font-size:10.5px; font-weight:700;
+       letter-spacing:.09em; color:var(--dimmer); }
+.tab:hover { color:var(--dim); }
+.tab.on { background:var(--ink3); color:var(--fitted); }
+
+.readouts { display:flex; gap:22px; margin-left:auto; }
+.readouts div { display:flex; flex-direction:column; gap:2px; }
+.readouts label { font-size:8.5px; letter-spacing:.14em; color:var(--dimmer); }
+.readouts span { font:600 17px var(--mono); }
+
+.link { font:10px var(--mono); color:var(--dimmer); }
+
+/* ---------- layout ---------- */
+main { display:grid; grid-template-columns:230px 1fr; gap:12px; min-height:0; }
+aside, section, footer {
+  background:linear-gradient(180deg,var(--ink1),#0b0f17);
+  border:1px solid var(--line); border-radius:12px;
+}
+aside { padding:11px; overflow-y:auto; }
+section { padding:14px; overflow:auto; min-width:0; }
+/* Only the selected view is on screen. Without this all three stack. */
+.view { display:none; }
+.view.on { display:block; }
+
+.rail-head { display:flex; justify-content:space-between; font-size:9px;
+             letter-spacing:.15em; color:var(--dimmer); margin-bottom:9px; }
+
+/* ---------- tracks ---------- */
+.track {
+  position:relative; display:grid; grid-template-columns:1fr auto;
+  align-items:center; gap:6px; padding:8px 9px 8px 13px; margin-bottom:5px;
+  background:rgba(22,28,41,.55); border:1px solid var(--line);
+  border-radius:8px; cursor:pointer; transition:.1s;
+}
+.track:hover { border-color:#33405a; }
+.track.sel { border-color:var(--c); background:color-mix(in srgb, var(--c) 12%, transparent); }
+.track::before { content:""; position:absolute; left:5px; top:9px; bottom:9px;
+                 width:3px; border-radius:2px; background:var(--c); }
+.track .nm { font-weight:700; font-size:12px; }
+.track.muted .nm { color:var(--dimmer); }
+.track .sub { font-size:9px; color:var(--dimmer); letter-spacing:.03em; }
+.track .lights { display:flex; gap:2px; margin-top:4px; }
+.track .lights i { flex:1; height:5px; border-radius:2px; background:var(--line); }
+.track .lights i.on { background:var(--c); }
+.track .lights i.here { background:var(--gold); box-shadow:0 0 6px var(--gold); }
+.badges { display:flex; gap:3px; }
+.badge { width:20px; height:20px; border-radius:4px; background:var(--ink3);
+         border:1px solid var(--line); font:700 9px var(--sans); color:var(--dimmer);
+         display:grid; place-items:center; }
+.badge.on-s { background:var(--gold); color:#241a00; border-color:var(--gold); }
+.badge.on-m { background:var(--hot); color:#fff; border-color:var(--hot); }
+
+/* ---------- steps ---------- */
+.bar { display:flex; align-items:center; gap:6px; margin-bottom:12px; }
+.bar.wrap { flex-wrap:wrap; }
+.chip { padding:6px 12px; border-radius:6px; background:var(--ink0);
+        border:1px solid var(--line); font-size:10.5px; font-weight:600; color:var(--dim); }
+.chip:hover { border-color:var(--fitted); color:var(--fitted); }
+.chip.on { background:color-mix(in srgb,var(--fitted) 18%,transparent);
+           border-color:var(--fitted); color:var(--fitted); }
+
+.steps { display:grid; grid-template-columns:repeat(16,1fr); gap:5px; }
+.step {
+  position:relative; aspect-ratio:1/1.05; border-radius:6px;
+  background:var(--ink2); border:1px solid var(--line); overflow:hidden;
+  transition:transform .06s, box-shadow .1s;
+}
+.step.beat { background:var(--ink3); }
+.step.on { background:var(--c); border-color:transparent; }
+.step.on .vel { position:absolute; left:0; right:0; bottom:0;
+                background:rgba(255,255,255,.2); }
+.step .n { position:absolute; top:3px; left:5px; font:600 8px var(--mono);
+           color:var(--dimmer); }
+.step.on .n { color:rgba(0,0,0,.5); }
+.step.here { box-shadow:0 0 0 2px var(--gold); transform:translateY(-2px); }
+.step:hover { border-color:#3d4b68; }
+
+/* ---------- mixer ---------- */
+.mixer { display:flex; gap:9px; align-items:flex-start; }
+.strip { flex:1; min-width:96px; max-width:150px; background:rgba(22,28,41,.5);
+         border:1px solid var(--line); border-radius:9px; padding:10px 8px; }
+.strip h3 { font-size:11px; text-align:center; color:var(--c); margin-bottom:8px; }
+.knobs { display:grid; grid-template-columns:1fr 1fr; gap:4px; }
+
+/* Knobs are drawn, not styled. A range input can never look like this. */
+.knob { display:flex; flex-direction:column; align-items:center; gap:2px; cursor:ns-resize; }
+.knob canvas { display:block; }
+.knob label { font-size:8px; letter-spacing:.08em; color:var(--dimmer); }
+.knob output { font:600 9.5px var(--mono); color:var(--dim); }
+
+.params { display:grid; grid-template-columns:repeat(auto-fill,minmax(74px,1fr)); gap:10px; }
+
+/* ---------- keyboard ---------- */
+footer { padding:10px 14px; display:flex; align-items:center; gap:16px; }
+.keys { display:flex; gap:4px; flex:1; }
+.key { flex:1; height:48px; border-radius:6px; background:var(--ink2);
+       border:1px solid var(--line); position:relative;
+       font:700 10px var(--sans); color:var(--dimmer);
+       display:flex; align-items:flex-end; justify-content:center; padding-bottom:5px; }
+.key.black { background:var(--ink0); flex:.62; }
+.key.down { background:var(--c); color:#06121a;
+            box-shadow:0 0 0 1px var(--c),0 0 18px -4px var(--c); transform:translateY(-2px); }
+.hint { font-size:10px; color:var(--dimmer); white-space:nowrap; }

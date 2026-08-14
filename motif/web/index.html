@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Motif</title>
+<link rel="stylesheet" href="motif.css">
+<div id="app">
+  <header>
+    <h1>MOTIF</h1>
+    <div class="transport">
+      <button id="rec" class="btn hot">RECORD</button>
+      <button id="play" class="btn mint">PLAY</button>
+    </div>
+    <nav id="views">
+      <button data-view="steps" class="tab on">STEPS</button>
+      <button data-view="mix" class="tab">MIX</button>
+      <button data-view="sound" class="tab">SOUND</button>
+    </nav>
+    <div class="readouts">
+      <div><label>TEMPO</label><span id="r-bpm">--</span></div>
+      <div><label>CYCLE</label><span id="r-cycle">--</span></div>
+      <div><label>PEAK</label><span id="r-peak">--</span></div>
+    </div>
+    <div id="link" class="link"></div>
+  </header>
+
+  <main>
+    <aside id="rail">
+      <div class="rail-head"><span>TRACKS</span><span id="track-count">0</span></div>
+      <div id="tracks"></div>
+    </aside>
+
+    <section id="stage">
+      <div id="view-steps" class="view on">
+        <div id="pattern-bar" class="bar"></div>
+        <div id="steps" class="steps"></div>
+      </div>
+      <div id="view-mix" class="view"><div id="mixer" class="mixer"></div></div>
+      <div id="view-sound" class="view">
+        <div id="preset-bar" class="bar wrap"></div>
+        <div id="params" class="params"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div id="keys" class="keys"></div>
+    <div class="hint">A-K plays the armed track &nbsp;|&nbsp; SPACE play &nbsp;|&nbsp; R record</div>
+  </footer>
+</div>
+<script src="motif.js"></script>

@@ -55,7 +55,7 @@ struct CondPreset { const char* label; TrigCondition cond; const char* blurb; };
 const std::vector<CondPreset>& condPresets() {
     using T = TrigCondition::Type;
     static const std::vector<CondPreset> kList = {
-        { "\xe2\x80\x94", { T::Always, 1.0f, 1, 4 },      "always plays" },
+        { "-", { T::Always, 1.0f, 1, 4 },      "always plays" },
         { "90%",  { T::Probability, 0.90f, 1, 4 },        "plays nine times in ten" },
         { "75%",  { T::Probability, 0.75f, 1, 4 },        "plays three times in four" },
         { "50%",  { T::Probability, 0.50f, 1, 4 },        "a coin flip" },
@@ -90,7 +90,9 @@ juce::String condLabel(const TrigCondition& c) {
 // ---------------------------------------------------------------------------
 
 MainComponent::MainComponent() {
-    setSize(1320, 820);
+    // Sized to sit inside a 1707x960 desktop with room for the taskbar, rather
+    // than to a display I do not have.
+    setSize(1280, 800);
     setWantsKeyboardFocus(true);
 
     keyMap_ = {
@@ -107,9 +109,31 @@ MainComponent::MainComponent() {
 
     setAudioChannels(0, 2);
     startTimerHz(60);
+
+    // Serve the interface. Found on disk rather than embedded so the UI can be
+    // edited and reloaded without rebuilding the engine, which is most of the
+    // reason for putting it in a browser in the first place.
+    auto webRoot = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+    juce::File found;
+    for (int up = 0; up < 8 && webRoot.exists(); ++up) {
+        const auto candidate = webRoot.getChildFile("web");
+        if (candidate.isDirectory() && candidate.getChildFile("index.html").existsAsFile()) {
+            found = candidate;
+            break;
+        }
+        webRoot = webRoot.getParentDirectory();
+    }
+    if (found.exists()) {
+        bridgePort_ = bridge_.start(found.getFullPathName().toStdString(), 7777);
+        if (bridgePort_ > 0)
+            juce::Logger::writeToLog("Motif UI on http://127.0.0.1:" + juce::String(bridgePort_));
+    }
 }
 
-MainComponent::~MainComponent() { shutdownAudio(); }
+MainComponent::~MainComponent() {
+    bridge_.stop();
+    shutdownAudio();
+}
 
 void MainComponent::prepareToPlay(int blockSize, double sampleRate) {
     engine_.prepare(sampleRate, blockSize);
@@ -350,33 +374,59 @@ void MainComponent::mouseDoubleClick(const juce::MouseEvent& e) {
 // Layout
 // ---------------------------------------------------------------------------
 
+/**
+ * Everything is measured from the space actually available.
+ *
+ * The first version assumed a comfortable window and hard-coded widths, which
+ * pushed the view tabs and the step grid off the right edge on a smaller
+ * display. Nothing here is a fixed position any more: the header lays itself
+ * out left to right from whatever it has, and the panels take proportions.
+ */
 void MainComponent::resized() {
-    auto area = getLocalBounds().reduced(16);
+    auto area = getLocalBounds().reduced(12);
+    const int W = area.getWidth();
 
-    headerArea_ = area.removeFromTop(54);
-    area.removeFromTop(12);
-    keyboardArea_ = area.removeFromBottom(84);
-    area.removeFromBottom(10);
-    stripArea_ = area.removeFromBottom(74);
-    area.removeFromBottom(10);
-    railArea_ = area.removeFromLeft(236);
-    area.removeFromLeft(10);
+    headerArea_ = area.removeFromTop(50);
+    area.removeFromTop(10);
+
+    // Give the keyboard and strip a share of the height rather than a fixed
+    // number of pixels, so a short window loses a little from each instead of
+    // clipping the main panel entirely.
+    keyboardArea_ = area.removeFromBottom(juce::jlimit(56, 84, area.getHeight() / 9));
+    area.removeFromBottom(8);
+    stripArea_ = area.removeFromBottom(juce::jlimit(56, 74, area.getHeight() / 9));
+    area.removeFromBottom(8);
+
+    railArea_ = area.removeFromLeft(juce::jlimit(180, 236, W / 6));
+    area.removeFromLeft(8);
     mainArea_ = area;
 
-    auto btns = headerArea_.withTrimmedLeft(128).withWidth(370).reduced(0, 8);
-    recButton_ = btns.removeFromLeft(116);
-    btns.removeFromLeft(7);
-    playButton_ = btns.removeFromLeft(104);
-    btns.removeFromLeft(7);
-    keepButton_ = btns.removeFromLeft(112);
+    // Header, packed left to right from what is there.
+    auto head = headerArea_;
+    head.removeFromLeft(juce::jlimit(74, 118, W / 12));      // wordmark
 
-    auto tabs = headerArea_.withTrimmedLeft(516).withWidth(376).reduced(0, 12);
+    const int btnW = juce::jlimit(74, 112, (W - 260) / 12);
+    auto btns = head.removeFromLeft(btnW * 3 + 12).reduced(0, 7);
+    recButton_ = btns.removeFromLeft(btnW);
+    btns.removeFromLeft(6);
+    playButton_ = btns.removeFromLeft(btnW);
+    btns.removeFromLeft(6);
+    keepButton_ = btns.removeFromLeft(btnW);
+
+    head.removeFromLeft(juce::jmax(8, W / 40));
+    const int tabW = juce::jlimit(58, 88, (W - btnW * 3 - 200) / kViewCount);
+    auto tabs = head.removeFromLeft(tabW * kViewCount + (kViewCount - 1) * 3).reduced(0, 11);
     for (int i = 0; i < kViewCount; ++i) {
-        viewTabs_[size_t(i)] = tabs.removeFromLeft(90);
-        tabs.removeFromLeft(4);
+        viewTabs_[size_t(i)] = tabs.removeFromLeft(tabW);
+        tabs.removeFromLeft(3);
     }
+    // Whatever is left is where the shortcut hint goes; it is drawn only if
+    // there is genuinely room, so it can never push anything off the edge.
+    hintArea_ = head;
 
-    strengthSlider_ = stripArea_.reduced(16, 14).removeFromLeft(240).withTrimmedTop(24).withHeight(13);
+    strengthSlider_ = stripArea_.reduced(14, 12)
+                          .removeFromLeft(juce::jlimit(140, 240, W / 6))
+                          .withTrimmedTop(22).withHeight(12);
 }
 
 float MainComponent::beatToX(double beats) const {
@@ -475,10 +525,15 @@ void MainComponent::paintHeader(juce::Graphics& g) {
         addHit(b, [this, idx, views] { view_ = views[idx]; });
     }
 
-    g.setColour(colour::dimmer);
-    g.setFont(uiFont(10.5f));
-    g.drawText("R rec  \xe2\x80\xa2  SPACE play  \xe2\x80\xa2  1/2/3 views  \xe2\x80\xa2  A\xe2\x80\x93K notes  \xe2\x80\xa2  \xe2\x86\x91\xe2\x86\x93 track",
-               headerArea_, juce::Justification::centredRight, false);
+    // Only if it genuinely fits. A hint that overlaps the tabs is worse than
+    // no hint at all.
+    if (hintArea_.getWidth() > 300) {
+        g.setColour(colour::dimmer);
+        g.setFont(uiFont(10.0f));
+        g.drawText("R rec   SPACE play   1-4 views   A-K notes   up/dn track",
+                   hintArea_, juce::Justification::centredRight, false);
+    }
+
 }
 
 void MainComponent::paintTrackRail(juce::Graphics& g) {
@@ -553,7 +608,7 @@ void MainComponent::paintTrackRail(juce::Graphics& g) {
         const auto* pattern = track.current();
         juce::String sub = track.instrument.isDrum
             ? juce::String(drumEngineName(track.instrument.drumEngine)) : juce::String("Synth");
-        if (pattern) sub += "  \xc2\xb7  " + juce::String(pattern->name);
+        if (pattern) sub += "  -  " + juce::String(pattern->name);
         g.drawText(sub, inner.removeFromTop(12), juce::Justification::centredLeft, false);
 
         if (pattern) {
@@ -590,7 +645,7 @@ void MainComponent::paintArrangeView(juce::Graphics& g) {
         g.setColour(colour::dimmer);
         g.setFont(uiFont(14.5f));
         g.drawText(engine_.recording()
-                       ? "Playing\xe2\x80\xa6 press R again when you have the idea down"
+                       ? "Playing... press R again when you have the idea down"
                        : "Press R and play something. Motif works out the rest.",
                    mainArea_, juce::Justification::centred, false);
         return;
@@ -746,12 +801,17 @@ void MainComponent::paintStepsView(juce::Graphics& g) {
 
     grid.removeFromTop(8);
 
-    // Step buttons.
+    // Step buttons, sized to the space rather than to a guess.
+    //
+    // Wrapping matters: a 32- or 64-step pattern on one line would either run
+    // off the edge or shrink each cell to a sliver. Sixteen to a row keeps the
+    // bar structure readable at any length.
     const int n = pattern.length;
-    const int perRow = n > 16 ? 16 : n;
+    const int perRow = juce::jmin(n, 16);
     const int rows = (n + perRow - 1) / perRow;
-    const int cellW = juce::jmin(56, grid.getWidth() / juce::jmax(1, perRow));
-    const int cellH = juce::jmin(58, (grid.getHeight() - (rows - 1) * 6) / juce::jmax(1, rows));
+    const int cellW = juce::jmax(14, grid.getWidth() / juce::jmax(1, perRow));
+    const int cellH = juce::jlimit(26, 62,
+                                   (grid.getHeight() - (rows - 1) * 6) / juce::jmax(1, rows));
     const int playingStep = engine_.playing() ? engine_.trackStep(trackIdx) : -1;
 
     for (int row = 0; row < rows; ++row) {
@@ -819,7 +879,7 @@ void MainComponent::paintStepsView(juce::Graphics& g) {
                 colour::dimmer);
     g.setColour(colour::dimmer);
     g.setFont(uiFont(10.0f));
-    g.drawText("click a step to toggle \xc2\xb7 shift-click to inspect without toggling",
+    g.drawText("click a step to toggle - shift-click to inspect without toggling",
                insHead, juce::Justification::centredRight, false);
     ins.removeFromTop(6);
 
@@ -1107,7 +1167,7 @@ void MainComponent::paintSoundView(juce::Graphics& g) {
     drawCaption(g, presetHead.removeFromLeft(70), "Presets", colour::dimmer);
     g.setColour(colour::dimmer);
     g.setFont(uiFont(9.5f));
-    g.drawText("click to load and hear \xc2\xb7 then turn knobs to taste", presetHead,
+    g.drawText("click to load and hear - then turn knobs to taste", presetHead,
                juce::Justification::centredLeft, false);
     area.removeFromTop(4);
 
@@ -1212,7 +1272,7 @@ void MainComponent::paintSoundView(juce::Graphics& g) {
 
         g.setColour(colour::dimmer);
         g.setFont(uiFont(10.5f));
-        g.drawText("Punch is how far the pitch drops at the start \xe2\x80\x94 it is what makes a kick thump rather than beep.",
+        g.drawText("Punch is how far the pitch drops at the start - it is what makes a kick thump rather than beep.",
                    row3.removeFromTop(20), juce::Justification::centredLeft, false);
     } else {
         const auto& p = track->instrument.synth;
@@ -1264,7 +1324,7 @@ void MainComponent::paintSoundView(juce::Graphics& g) {
 
     g.setColour(colour::dimmer);
     g.setFont(uiFont(10.0f));
-    g.drawText("Drag a knob to change it \xc2\xb7 shift for fine \xc2\xb7 double-click to reset",
+    g.drawText("Drag a knob to change it - shift for fine - double-click to reset",
                mainArea_.reduced(16, 12), juce::Justification::bottomRight, false);
 }
 
@@ -1300,11 +1360,11 @@ void MainComponent::paintTransportStrip(juce::Graphics& g) {
         drawReadout(g, readouts.removeFromLeft(w), label, value, tint);
     };
     cell("Tempo", juce::String(song_.bpm, 1), colour::text);
-    cell("Grid", has ? subdivisionName(fit.subdivision) : "\xe2\x80\x94", colour::fitted);
+    cell("Grid", has ? subdivisionName(fit.subdivision) : "-", colour::fitted);
     cell("Bars", juce::String(song_.barsPerLoop), colour::text);
-    cell("Fit", has ? pct(float(fit.confidence)) + "%" : "\xe2\x80\x94",
+    cell("Fit", has ? pct(float(fit.confidence)) + "%" : "-",
          fit.confidence > 0.75 ? colour::fitted : colour::gold);
-    cell("Swing", has ? pct(float(fit.swing)) + "%" : "\xe2\x80\x94", colour::played);
+    cell("Swing", has ? pct(float(fit.swing)) + "%" : "-", colour::played);
     cell("Cycle", juce::String(int(song_.polymeterCycle())) + " st", colour::dim);
 }
 
