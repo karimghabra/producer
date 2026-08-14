@@ -127,7 +127,10 @@ json trackToJson(const Track& t) {
         { "mixer", json{ { "gain", t.mixer.gain }, { "pan", t.mixer.pan },
                          { "mute", t.mixer.mute }, { "solo", t.mixer.solo },
                          { "reverb", t.mixer.reverbSend }, { "delay", t.mixer.delaySend },
-                         { "duck", t.mixer.duck } } },
+                         { "duck", t.mixer.duck },
+                         { "filterType", int(t.mixer.filterType) },
+                         { "filterCutoff", t.mixer.filterCutoff },
+                         { "filterReso", t.mixer.filterResonance } } },
         { "patterns", std::move(patterns) },
     };
 }
@@ -157,6 +160,11 @@ Track trackFromJson(const json& j) {
         get(*m, "reverb", t.mixer.reverbSend);
         get(*m, "delay", t.mixer.delaySend);
         get(*m, "duck", t.mixer.duck);
+        int ft = int(t.mixer.filterType);
+        get(*m, "filterType", ft);
+        t.mixer.filterType = Mixer::Filter(std::clamp(ft, 0, 3));
+        get(*m, "filterCutoff", t.mixer.filterCutoff);
+        get(*m, "filterReso", t.mixer.filterResonance);
     }
 
     if (auto p = j.find("patterns"); p != j.end() && p->is_array() && !p->empty()) {

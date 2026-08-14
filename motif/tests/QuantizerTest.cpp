@@ -385,6 +385,84 @@ int main() {
         check(drumClipping == 0, "no drum preset clips on its own", "");
     }
 
+    // --- the channel filter --------------------------------------------------
+    //
+    // A filter that is wired up but does nothing is indistinguishable from one
+    // that is not wired up at all, so this measures the output rather than
+    // trusting the code path. Zero crossings stand in for brightness: no FFT
+    // needed to tell that the top has been taken off something.
+    std::printf("\nChannel filter:\n");
+    {
+        constexpr double SR = 48000.0;
+        const int blockSize = 256;
+        const int blocks = 90;                       // about half a second
+
+        auto renderWith = [&](Mixer::Filter type, float cutoff) {
+            Song song;
+            Track t;
+            t.name = "Test";
+            t.instrument.isDrum = false;
+            t.instrument.synth.engine = SynthEngine::Supersaw;
+            t.instrument.synth.cutoff = 18000.0f;    // let the filter under test decide
+            t.instrument.synth.ampSustain = 1.0f;
+            t.instrument.synth.ampDecay = 2.0f;
+            t.armed = true;
+            t.seqEnabled = false;                    // played, not sequenced
+            t.mixer.filterType = type;
+            t.mixer.filterCutoff = cutoff;
+            t.mixer.filterResonance = 0.9f;
+            song.tracks.push_back(t);
+            song.master.limiter = false;             // do not let it colour the test
+            song.master.drive = 0.0f;
+
+            Engine engine;
+            engine.prepare(SR, blockSize);
+            engine.setSong(song);
+            engine.noteOn(57, 0.9f);
+
+            std::vector<float> out;
+            out.reserve(size_t(blocks * blockSize));
+            // Fill values, not just sizes: vector<float> l(size_t(n)) is a
+            // function declaration, and the error it produces says nothing
+            // about that.
+            std::vector<float> l(size_t(blockSize), 0.0f), r(size_t(blockSize), 0.0f);
+            for (int b = 0; b < blocks; ++b) {
+                engine.render(l.data(), r.data(), blockSize);
+                out.insert(out.end(), l.begin(), l.end());
+            }
+            float peak = 0.0f;
+            int crossings = 0;
+            for (size_t i = 1; i < out.size(); ++i) {
+                peak = std::max(peak, std::abs(out[i]));
+                if ((out[i - 1] < 0.0f) != (out[i] < 0.0f)) ++crossings;
+            }
+            return std::pair<float, int>{ peak, crossings };
+        };
+
+        const auto [openPeak, openCross] = renderWith(Mixer::Filter::Off, 1000.0f);
+        check(openPeak > 0.01f, "the test tone sounds at all",
+              "peak " + std::to_string(openPeak).substr(0, 5));
+
+        const auto [lpPeak, lpCross] = renderWith(Mixer::Filter::Lowpass, 220.0f);
+        check(lpCross * 2 < openCross, "a lowpass takes the top off",
+              std::to_string(openCross) + " crossings -> " + std::to_string(lpCross));
+        check(lpPeak > 0.001f, "and leaves something behind",
+              "peak " + std::to_string(lpPeak).substr(0, 5));
+
+        const auto [hpPeak, hpCross] = renderWith(Mixer::Filter::Highpass, 5000.0f);
+        check(hpCross > openCross, "a highpass takes the bottom out",
+              std::to_string(openCross) + " crossings -> " + std::to_string(hpCross));
+        check(hpPeak < openPeak, "and leaves less behind than no filter at all",
+              std::to_string(openPeak).substr(0, 5) + " -> " + std::to_string(hpPeak).substr(0, 5));
+
+        // Off must be genuinely off, not a filter parked wide open: a track
+        // with no filter should be sample-identical to one before the feature
+        // existed.
+        const auto [offPeak, offCross] = renderWith(Mixer::Filter::Off, 220.0f);
+        check(offPeak == openPeak && offCross == openCross,
+              "cutoff is ignored while the filter is off", "identical output");
+    }
+
     // --- the project format ------------------------------------------------
     //
     // A save format is where work quietly goes missing: a field that is written

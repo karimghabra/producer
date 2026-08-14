@@ -122,7 +122,30 @@ struct Mixer {
     float delaySend = 0.0f;
     /** How far this track ducks when the sidechain source fires. */
     float duck = 0.0f;
+
+    /**
+     * A filter on the channel itself, after the instrument and before the fader.
+     *
+     * Separate from the filter inside the instrument on purpose. That one is
+     * part of the sound - it moves with the note and its envelope. This one is
+     * part of the arrangement: it takes the whole track, drums included, and
+     * it is what a filter sweep across a build actually is.
+     */
+    enum class Filter { Off, Lowpass, Highpass, Bandpass };
+    Filter filterType = Filter::Off;
+    float filterCutoff = 1200.0f;
+    float filterResonance = 0.9f;
 };
+
+inline const char* filterName(Mixer::Filter f) {
+    switch (f) {
+        case Mixer::Filter::Off:       return "Off";
+        case Mixer::Filter::Lowpass:   return "Low";
+        case Mixer::Filter::Highpass:  return "High";
+        case Mixer::Filter::Bandpass:  return "Band";
+    }
+    return "Off";
+}
 
 struct Instrument {
     bool isDrum = true;

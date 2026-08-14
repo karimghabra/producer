@@ -289,6 +289,11 @@ int Engine::trackStep(int trackIndex) const {
     return stepDisplay_[size_t(trackIndex)].load(std::memory_order_relaxed);
 }
 
+float Engine::trackPeak(int trackIndex) const {
+    if (trackIndex < 0 || trackIndex >= kMaxTracks) return 0.0f;
+    return trackPeaks_[size_t(trackIndex)].load(std::memory_order_relaxed);
+}
+
 // --- recording -------------------------------------------------------------
 
 void Engine::armRecording() {
@@ -407,6 +412,10 @@ void Engine::render(float* left, float* right, int numSamples) {
     const bool anySolo = song_.anySolo();
     beatsPerSample_ = song_.bpm / 60.0 / sampleRate_;
     const MasterFx& fxParams = song_.master;
+    // About 300 ms to fall by half: slow enough to read, fast enough to follow
+    // a fader.
+    const float meterDecay = float(std::exp(-1.0 / (0.3 * sampleRate_)));
+
     const float duckRelease = std::max(0.02f, fxParams.sidechainRelease);
     const float duckStep = float(1.0 / (double(duckRelease) * sampleRate_));
     duckCurve_ = fxParams.sidechainCurve;
@@ -505,10 +514,31 @@ void Engine::render(float* left, float* right, int numSamples) {
             // which is the pump; below 1 it lifts immediately.
             const float duck = 1.0f - m.duck * std::pow(1.0f - rt.duckPhase, duckCurve_);
 
+            // The channel filter, before the fader: sweeping a filter should
+            // not also change how loud the track is.
+            float srcL = trackL[t], srcR = trackR[t];
+            if (m.filterType != Mixer::Filter::Off) {
+                const auto mode = m.filterType == Mixer::Filter::Highpass ? dsp::SvFilter::Mode::Highpass
+                                : m.filterType == Mixer::Filter::Bandpass ? dsp::SvFilter::Mode::Bandpass
+                                                                          : dsp::SvFilter::Mode::Lowpass;
+                rt.filterL.setMode(mode);
+                rt.filterR.setMode(mode);
+                rt.filterL.set(m.filterCutoff, m.filterResonance);
+                rt.filterR.set(m.filterCutoff, m.filterResonance);
+                srcL = rt.filterL.next(srcL);
+                srcR = rt.filterR.next(srcR);
+            }
+
             const float g = m.gain * duck;
             const float angle = (std::clamp(m.pan, -1.0f, 1.0f) + 1.0f) * 0.25f * float(dsp::kPi);
-            const float l = trackL[t] * g * std::cos(angle);
-            const float r = trackR[t] * g * std::sin(angle);
+            const float l = srcL * g * std::cos(angle);
+            const float r = srcR * g * std::sin(angle);
+
+            // Meter: fast to rise, slow to fall, so a level can be read from a
+            // signal that is mostly silence between hits.
+            const float mag = std::max(std::abs(l), std::abs(r));
+            rt.peak = mag > rt.peak ? mag : rt.peak * meterDecay;
+            trackPeaks_[t].store(rt.peak, std::memory_order_relaxed);
 
             dryL += l;
             dryR += r;

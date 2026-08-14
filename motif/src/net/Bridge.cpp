@@ -116,6 +116,8 @@ std::string Bridge::stateJson() const {
 
     j << "{\"bpm\":" << num(song.bpm)
       << ",\"swing\":" << num(song.swing)
+      << ",\"swingUnit\":" << song.swingUnit
+      << ",\"humanize\":" << num(song.humanize, 2)
       << ",\"beatsPerBar\":" << song.beatsPerBar
       << ",\"barsPerLoop\":" << song.barsPerLoop
       << ",\"playing\":" << (engine_.playing() ? "true" : "false")
@@ -147,6 +149,8 @@ std::string Bridge::stateJson() const {
       << ",\"damp\":" << num(song.master.reverb.damp)
       << ",\"width\":" << num(song.master.reverb.width)
       << ",\"mix\":" << num(song.master.reverb.mix) << "}"
+      << ",\"sidechainRelease\":" << num(song.master.sidechainRelease, 3)
+      << ",\"sidechainCurve\":" << num(song.master.sidechainCurve, 2)
       << ",\"delay\":{\"beats\":" << num(song.master.delay.beats)
       << ",\"feedback\":" << num(song.master.delay.feedback)
       << ",\"tone\":" << num(song.master.delay.tone, 1)
@@ -173,7 +177,11 @@ std::string Bridge::stateJson() const {
           << ",\"solo\":" << (t.mixer.solo ? "true" : "false")
           << ",\"reverb\":" << num(t.mixer.reverbSend)
           << ",\"delay\":" << num(t.mixer.delaySend)
-          << ",\"duck\":" << num(t.mixer.duck) << "}"
+          << ",\"duck\":" << num(t.mixer.duck)
+          << ",\"filterType\":" << int(t.mixer.filterType)
+          << ",\"filterCutoff\":" << num(t.mixer.filterCutoff, 1)
+          << ",\"filterReso\":" << num(t.mixer.filterResonance, 2) << "}"
+          << ",\"peak\":" << num(engine_.trackPeak(int(i)), 3)
           << ",\"activePattern\":" << t.activePattern
           << ",\"patterns\":[";
 
@@ -461,6 +469,59 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
             else if (which == "duck") t.mixer.duck = v;
             else t.mixer.reverbSend = v;
         });
+        return true;
+    }
+
+    // --- the channel filter -----------------------------------------------
+    //
+    // Distinct from the filter inside the instrument: this one takes the whole
+    // track, drums included, and is what a sweep across a build actually is.
+    if (type == "filter") {
+        std::string what;
+        field(body, "what", what);
+        onTrack([&](Track& t, Song&) {
+            if      (what == "type")   t.mixer.filterType = Mixer::Filter(std::clamp(intField(body, "value", 0), 0, 3));
+            else if (what == "cutoff") t.mixer.filterCutoff = float(std::clamp(value, 20.0, 20000.0));
+            else if (what == "reso")   t.mixer.filterResonance = float(std::clamp(value, 0.5, 20.0));
+        });
+        return true;
+    }
+
+    // --- groove and master --------------------------------------------------
+
+    if (type == "humanize") {
+        engine_.editSong([&](Song& s) { s.humanize = std::clamp(value, 0.0, 40.0); });
+        return true;
+    }
+    if (type == "swingUnit") {
+        engine_.editSong([&](Song& s) { s.swingUnit = std::clamp(intField(body, "value", 2), 1, 8); });
+        return true;
+    }
+
+    if (type == "master") {
+        std::string what;
+        if (!field(body, "what", what)) { error = "missing what"; return false; }
+        bool applied = true;
+        engine_.editSong([&](Song& s) {
+            MasterFx& m = s.master;
+            const float v = float(value);
+            if      (what == "gain")     m.gain = std::clamp(v, 0.0f, 1.5f);
+            else if (what == "drive")    m.drive = std::clamp(v, 0.0f, 1.0f);
+            else if (what == "limiter")  m.limiter = value > 0.5;
+            else if (what == "revSize")  m.reverb.size = std::clamp(v, 0.0f, 1.0f);
+            else if (what == "revDamp")  m.reverb.damp = std::clamp(v, 0.0f, 1.0f);
+            else if (what == "revWidth") m.reverb.width = std::clamp(v, 0.0f, 1.0f);
+            else if (what == "revMix")   m.reverb.mix = std::clamp(v, 0.0f, 1.5f);
+            else if (what == "dlyBeats") m.delay.beats = std::clamp(v, 0.03f, 4.0f);
+            else if (what == "dlyFb")    m.delay.feedback = std::clamp(v, 0.0f, 0.95f);
+            else if (what == "dlyTone")  m.delay.tone = std::clamp(v, 200.0f, 18000.0f);
+            else if (what == "dlyPing")  m.delay.pingpong = std::clamp(v, 0.0f, 1.0f);
+            else if (what == "dlyMix")   m.delay.mix = std::clamp(v, 0.0f, 1.5f);
+            else if (what == "scRelease") m.sidechainRelease = std::clamp(v, 0.02f, 1.5f);
+            else if (what == "scCurve")  m.sidechainCurve = std::clamp(v, 0.3f, 6.0f);
+            else applied = false;
+        });
+        if (!applied) { error = "unknown master control: " + what; return false; }
         return true;
     }
 

@@ -533,6 +533,117 @@ check(baked.euclid === false && baked.steps.filter((s) => s.on).length === lit2,
 await cmd({ type: 'newSong' });
 await page.waitForTimeout(350);
 
+// --- shaping a bar: rate, filter, groove, master -----------------------------
+
+// Step rate, per track, as a note value.
+await page.locator('[data-view="grid"]').click();
+await page.waitForTimeout(350);
+const rateChip = page.locator('#grid-rows .grow').nth(2).locator('.gh-rate');
+check(await rateChip.innerText() === '1/16', 'each track shows its step rate',
+      await rateChip.innerText());
+await rateChip.click();
+await page.waitForTimeout(250);
+await page.locator('#track-menu .chip', { hasText: '1/32' }).click();
+await page.waitForTimeout(350);
+check((await engine()).tracks[2].patterns[0].resolution === 8, 'the rate reaches the engine',
+      `resolution ${(await engine()).tracks[2].patterns[0].resolution}`);
+check(await page.locator('#grid-rows .grow').nth(2).locator('.gh-rate').innerText() === '1/32',
+      'and the track shows it');
+// Rates are per track, so changing one must not touch another.
+check((await engine()).tracks[0].patterns[0].resolution === 4,
+      'and only that track', `kick still ${(await engine()).tracks[0].patterns[0].resolution}/beat`);
+await rateChip.click();
+await page.waitForTimeout(250);
+await page.locator('#track-menu .chip', { hasText: '1/16' }).first().click();
+await page.waitForTimeout(300);
+
+// The channel filter.
+await page.locator('[data-view="mix"]').click();
+await page.waitForTimeout(400);
+const strip2 = page.locator('.strip').nth(2);
+check(await strip2.locator('.filt').count() === 1, 'every channel has a filter');
+check(await strip2.locator('.filt .knob').count() === 0,
+      'with no controls shown while it is off');
+await strip2.locator('.filt .chip', { hasText: 'Low' }).click();
+await page.waitForTimeout(400);
+check((await engine()).tracks[2].mixer.filterType === 1, 'switching it on reaches the engine',
+      `type ${(await engine()).tracks[2].mixer.filterType}`);
+check(await strip2.locator('.filt .knob').count() === 2,
+      'and its cutoff and resonance appear');
+
+const cutBox = await strip2.locator('.filt .knob canvas').first().boundingBox();
+const fcBefore = (await engine()).tracks[2].mixer.filterCutoff;
+await page.mouse.move(cutBox.x + cutBox.width / 2, cutBox.y + cutBox.height / 2);
+await page.mouse.down();
+await page.mouse.move(cutBox.x + cutBox.width / 2, cutBox.y + cutBox.height / 2 - 55, { steps: 10 });
+await page.mouse.up();
+await page.waitForTimeout(350);
+check((await engine()).tracks[2].mixer.filterCutoff > fcBefore * 1.4,
+      'and sweeping the cutoff reaches the engine',
+      `${Math.round(fcBefore)} -> ${Math.round((await engine()).tracks[2].mixer.filterCutoff)} Hz`);
+await strip2.locator('.filt .chip', { hasText: 'Off' }).click();
+await page.waitForTimeout(300);
+
+// Master effects: what the per-track sends were always feeding.
+check(await page.locator('#master .mgroup').count() === 4,
+      'the master bus is reachable',
+      `${await page.locator('#master .mgroup').count()} groups`);
+const revBox = await page.locator('#master .mgroup', { hasText: 'REVERB' })
+  .locator('.knob canvas').first().boundingBox();
+const revBefore = (await engine()).master.reverb.size;
+await page.mouse.move(revBox.x + revBox.width / 2, revBox.y + revBox.height / 2);
+await page.mouse.down();
+await page.mouse.move(revBox.x + revBox.width / 2, revBox.y + revBox.height / 2 - 50, { steps: 10 });
+await page.mouse.up();
+await page.waitForTimeout(350);
+check((await engine()).master.reverb.size > revBefore + 0.1, 'reverb size is adjustable',
+      `${revBefore.toFixed(2)} -> ${(await engine()).master.reverb.size.toFixed(2)}`);
+
+await page.locator('#master .chip', { hasText: '1/8' }).first().click();
+await page.waitForTimeout(350);
+check(Math.abs((await engine()).master.delay.beats - 0.5) < 0.01, 'delay time is musical',
+      `${(await engine()).master.delay.beats} beats`);
+
+// Groove.
+await page.locator('#groove').click();
+await page.waitForTimeout(300);
+check(await page.locator('#track-menu .groove-knobs').count() === 1, 'groove controls open');
+const swingBox = await page.locator('#track-menu .groove-knobs .knob canvas').nth(1).boundingBox();
+await page.mouse.move(swingBox.x + swingBox.width / 2, swingBox.y + swingBox.height / 2);
+await page.mouse.down();
+await page.mouse.move(swingBox.x + swingBox.width / 2, swingBox.y + swingBox.height / 2 - 45, { steps: 10 });
+await page.mouse.up();
+await page.waitForTimeout(350);
+check((await engine()).swing > 0.2, 'swing reaches the engine',
+      `${pctOf((await engine()).swing)}`);
+await cmd({ type: 'swing', value: 0 });
+await page.keyboard.press('Escape');
+await page.locator('#grid-rows, #mixer').first().click({ position: { x: 5, y: 5 } }).catch(() => {});
+await page.waitForTimeout(250);
+
+// Tempo by dragging the readout.
+const bpmBefore = (await engine()).bpm;
+const gb = await page.locator('#groove').boundingBox();
+await page.mouse.move(gb.x + gb.width / 2, gb.y + gb.height / 2);
+await page.mouse.down();
+await page.mouse.move(gb.x + gb.width / 2, gb.y + gb.height / 2 - 40, { steps: 10 });
+await page.mouse.up();
+await page.waitForTimeout(350);
+check((await engine()).bpm > bpmBefore + 3, 'dragging the tempo readout changes it',
+      `${bpmBefore} -> ${(await engine()).bpm}`);
+await cmd({ type: 'bpm', value: 124 });
+
+// Meters.
+await page.locator('[data-view="grid"]').click();
+await cmd({ type: 'play' });
+await page.waitForTimeout(1200);
+const meterWidths = await page.evaluate(() =>
+  [...document.querySelectorAll('#grid-rows .gh-meter i')].map((el) => parseFloat(el.style.width) || 0));
+check(meterWidths.some((w) => w > 1), 'track meters move while it plays',
+      meterWidths.map((w) => Math.round(w) + '%').join(' '));
+await cmd({ type: 'stop' });
+await page.waitForTimeout(300);
+
 // --- the playing surface -----------------------------------------------------
 //
 // The app's whole premise is that you play the part rather than draw it, so

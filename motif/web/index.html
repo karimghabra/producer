@@ -19,7 +19,11 @@
       <label>PROJECT</label><span id="project-name">Untitled</span>
     </button>
     <div class="readouts">
-      <div><label>TEMPO</label><span id="r-bpm">--</span></div>
+      <button id="groove" class="readout-btn"
+              title="Tempo, shuffle and humanise. Drag the number, or click for the rest.">
+        <label>TEMPO</label><span id="r-bpm">--</span>
+      </button>
+      <div><label>SWING</label><span id="r-swing">--</span></div>
       <div><label>CYCLE</label><span id="r-cycle">--</span></div>
       <div><label>PEAK</label><span id="r-peak">--</span></div>
     </div>
@@ -77,7 +81,11 @@
           </div>
         </div>
       </div>
-      <div id="view-mix" class="view"><div id="mixer" class="mixer"></div></div>
+      <div id="view-mix" class="view">
+        <div id="mixer" class="mixer"></div>
+        <!-- What the per-track VERB and DELAY knobs have always been sending to. -->
+        <div id="master" class="master"></div>
+      </div>
       <div id="view-sound" class="view">
         <div id="preset-bar" class="bar wrap"></div>
         <div id="params" class="params"></div>

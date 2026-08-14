@@ -108,6 +108,8 @@ public:
     int trackStep(int trackIndex) const;
 
     float outputPeak() const { return peak_.load(std::memory_order_relaxed); }
+    /** Post-fader level of one track, 0..1, for its meter. */
+    float trackPeak(int trackIndex) const;
     /** How hard the limiter is working, 0..1, for the meter. */
     float limiterReduction() const { return reduction_.load(std::memory_order_relaxed); }
     int activeVoiceCount() const;
@@ -138,8 +140,23 @@ private:
         double ratchetInterval = 0.0;
         double nextRatchetBeats = 0.0;
         float ratchetVelocity = 0.0f;
+
+        /** The channel filter. Two, because the track is already stereo here. */
+        dsp::SvFilter filterL, filterR;
+        /** Decaying post-fader peak, held on the audio thread. */
+        float peak = 0.0f;
     };
     std::array<TrackRuntime, kMaxTracks> runtime_;
+
+    /**
+     * Meter levels, published for the interface to read.
+     *
+     * Separate from the runtime copy because this is the one crossing threads:
+     * the audio thread stores, the message thread loads, and neither waits for
+     * the other. A meter that tore would only ever be off by one frame, but
+     * the race itself is undefined behaviour.
+     */
+    std::array<std::atomic<float>, kMaxTracks> trackPeaks_{};
 
     Song song_;
     mutable std::mutex songLock_;

@@ -795,6 +795,42 @@ function drawTake() {
 // actually shows.
 // --------------------------------------------------------------------------
 
+// Steps per beat, as the note value it actually is. Triplet rates divide the
+// beat into three, which is why they are odd numbers here.
+const RATE_LABEL = { 1: '1/4', 2: '1/8', 3: '1/8T', 4: '1/16', 6: '1/16T', 8: '1/32' };
+const RATES = [1, 2, 3, 4, 6, 8];
+
+function openRateMenu(trackIndex, anchor) {
+  closeMenu();
+  const menu = document.createElement('div');
+  menu.className = 'menu';
+  menu.id = 'track-menu';
+  menu.innerHTML = '<div class="menu-head">STEP RATE</div>';
+  const row = document.createElement('div');
+  row.className = 'choice-row pad';
+  const pat = state.tracks[trackIndex].patterns[state.tracks[trackIndex].activePattern];
+  for (const r of RATES) {
+    const b = document.createElement('button');
+    b.className = 'chip small' + (pat.resolution === r ? ' on' : '');
+    b.textContent = RATE_LABEL[r];
+    b.onclick = () => { api.send('patternResolution', { track: trackIndex, value: r }); closeMenu(); };
+    row.append(b);
+  }
+  menu.append(row);
+  const note = document.createElement('div');
+  note.className = 'menu-foot';
+  note.textContent = 'Each track keeps its own rate. Mixing them is how a part '
+    + 'sits in half time or doubles up under everything else.';
+  menu.append(note);
+
+  document.body.append(menu);
+  const box = anchor.getBoundingClientRect();
+  menu.style.left = Math.min(box.left, innerWidth - menu.offsetWidth - 8) + 'px';
+  menu.style.top = (innerHeight - box.bottom > menu.offsetHeight + 8
+    ? box.bottom + 4 : box.top - menu.offsetHeight - 4) + 'px';
+  setTimeout(() => addEventListener('pointerdown', dismissMenu), 0);
+}
+
 /** How many columns to draw: the longest pattern, within reason. */
 function gridColumns() {
   const lengths = state.tracks.map((t) => t.patterns[t.activePattern]?.length ?? 16);
@@ -869,6 +905,23 @@ function renderGrid() {
     head.innerHTML =
       `<div class="gh-name">${esc(t.name)}</div>
        <div class="gh-sub">${esc(pat.name)} &middot; ${pat.length}</div>`;
+
+    // Rate, as a note value rather than a step count. "1/16" is the thing you
+    // mean; "4 steps per beat" is how it happens to be stored.
+    const rate = document.createElement('button');
+    rate.className = 'gh-rate';
+    rate.textContent = RATE_LABEL[pat.resolution] || `${pat.resolution}/beat`;
+    rate.title = 'How fast this track\'s steps run. Each track has its own, so '
+      + 'a hat can run at 1/32 under a bass at 1/8.';
+    rate.onclick = (e) => { e.stopPropagation(); openRateMenu(ti, e.currentTarget); };
+    head.append(rate);
+
+    // Level, so balancing is by eye as well as by ear.
+    const meter = document.createElement('div');
+    meter.className = 'gh-meter';
+    meter.innerHTML = '<i></i>';
+    head.append(meter);
+
     const badges = document.createElement('div');
     badges.className = 'gh-badges';
     for (const [key, cls, on] of [['solo', 'on-s', t.mixer.solo], ['mute', 'on-m', t.mixer.mute]]) {
@@ -1006,8 +1059,159 @@ function renderMix() {
            (v) => api.send('send', { track: i, which: 'duck', value: v })),
     );
     strip.append(knobs);
+
+    // The channel filter. Off by default and visibly so, because a filter you
+    // forgot was engaged is a mix problem you cannot hear the cause of.
+    const filt = document.createElement('div');
+    filt.className = 'filt' + (t.mixer.filterType ? ' on' : '');
+    filt.innerHTML = '<label>FILTER</label>';
+    const types = document.createElement('div');
+    types.className = 'filt-types';
+    ['Off', 'Low', 'High', 'Band'].forEach((name, n) => {
+      const b = document.createElement('button');
+      b.className = 'chip tiny' + (t.mixer.filterType === n ? ' on' : '');
+      b.textContent = name;
+      b.title = ['No filter on this channel.',
+                 'Lowpass: takes the top off. Sweeping one open is the classic build.',
+                 'Highpass: takes the bottom out. Thins a track so the kick has room.',
+                 'Bandpass: keeps a slice around the cutoff, like a radio.'][n];
+      b.onclick = () => api.send('filter', { track: i, what: 'type', value: n });
+      types.append(b);
+    });
+    filt.append(types);
+
+    if (t.mixer.filterType) {
+      const fk = document.createElement('div');
+      fk.className = 'knobs';
+      const LO = 20, HI = 20000;
+      const toNorm = (hz) => Math.log(hz / LO) / Math.log(HI / LO);
+      const toHz = (v) => LO * Math.pow(HI / LO, v);
+      fk.append(
+        knob('CUTOFF', toNorm(t.mixer.filterCutoff),
+             t.mixer.filterCutoff >= 1000 ? (t.mixer.filterCutoff / 1000).toFixed(1) + 'k'
+                                          : Math.round(t.mixer.filterCutoff) + '',
+             c, (v) => api.send('filter', { track: i, what: 'cutoff', value: toHz(v) })),
+        knob('RESO', (t.mixer.filterReso - 0.5) / 19.5, t.mixer.filterReso.toFixed(1), c,
+             (v) => api.send('filter', { track: i, what: 'reso', value: 0.5 + v * 19.5 })),
+      );
+      filt.append(fk);
+    }
+    strip.append(filt);
+
+    // Level, post-fader.
+    const meter = document.createElement('div');
+    meter.className = 'strip-meter';
+    meter.innerHTML = '<i></i>';
+    strip.append(meter);
+
     host.append(strip);
   });
+
+  renderMaster();
+}
+
+/**
+ * The master bus.
+ *
+ * Every track has had VERB and DELAY sends since the beginning, feeding
+ * effects with no controls anywhere in the interface. This is what they were
+ * being sent to.
+ */
+function renderMaster() {
+  const host = $('#master');
+  const m = state.master;
+  host.innerHTML = '';
+
+  const group = (title, controls) => {
+    const g = document.createElement('div');
+    g.className = 'mgroup';
+    g.innerHTML = `<h4>${title}</h4>`;
+    const k = document.createElement('div');
+    k.className = 'knobs';
+    k.append(...controls);
+    g.append(k);
+    return g;
+  };
+  const mk = (label, norm, display, tint, what, toValue, help) => {
+    const w = knob(label, norm, display, tint, (v) => api.send('master', { what, value: toValue(v) }));
+    w.classList.add('param');
+    w.title = `${label}\n\n${help}`;
+    return w;
+  };
+
+  host.append(group('OUTPUT', [
+    mk('LEVEL', m.gain / 1.5, pct(m.gain / 1.5) + '%', '#e9eefb', 'gain', (v) => v * 1.5,
+       'Level of the whole mix, before the limiter.'),
+    mk('DRIVE', m.drive, pct(m.drive) + '%', '#ffb86b', 'drive', (v) => v,
+       'Saturation across the master. A little glues a mix together; a lot is '
+       + 'the sound of everything being pushed into the same place.'),
+  ]));
+
+  const lim = document.createElement('button');
+  lim.className = 'chip small' + (m.limiter ? ' on' : '');
+  lim.textContent = 'LIMITER';
+  lim.title = 'Catches peaks before the output clips. A lookahead limiter, so it '
+    + 'sees a transient coming rather than reacting after it has passed.';
+  lim.onclick = () => api.send('master', { what: 'limiter', value: m.limiter ? 0 : 1 });
+  host.querySelector('.mgroup').append(lim);
+
+  host.append(group('REVERB', [
+    mk('SIZE', m.reverb.size, pct(m.reverb.size) + '%', '#ffb86b', 'revSize', (v) => v,
+       'How long the space rings for. Small is a room, large is a hall that '
+       + 'never quite stops.'),
+    mk('DAMP', m.reverb.damp, pct(m.reverb.damp) + '%', '#ffb86b', 'revDamp', (v) => v,
+       'How fast the treble dies inside the tail. High damping is a soft room '
+       + 'with curtains; low is tiled and bright.'),
+    mk('WIDTH', m.reverb.width, pct(m.reverb.width) + '%', '#ffb86b', 'revWidth', (v) => v,
+       'How far the tail spreads across the stereo field.'),
+    mk('RETURN', m.reverb.mix / 1.5, pct(m.reverb.mix / 1.5) + '%', '#ffb86b', 'revMix', (v) => v * 1.5,
+       'How much of the reverb comes back into the mix. The per-track VERB '
+       + 'knobs decide how much each track sends here.'),
+  ]));
+
+  const beats = [[0.25, '1/16'], [0.375, '1/16.'], [0.5, '1/8'], [0.75, '1/8.'],
+                 [1, '1/4'], [1.5, '1/4.'], [2, '1/2']];
+  const nearest = beats.reduce((a, b) =>
+    Math.abs(b[0] - m.delay.beats) < Math.abs(a[0] - m.delay.beats) ? b : a);
+  const delayGroup = group('DELAY', [
+    mk('FEEDBACK', m.delay.feedback / 0.95, pct(m.delay.feedback / 0.95) + '%', '#c77dff',
+       'dlyFb', (v) => v * 0.95,
+       'How much of each repeat is fed back in. High and it runs away from you, '
+       + 'which is sometimes the point.'),
+    mk('TONE', Math.log(m.delay.tone / 200) / Math.log(90),
+       m.delay.tone >= 1000 ? (m.delay.tone / 1000).toFixed(1) + 'k' : Math.round(m.delay.tone) + '',
+       '#c77dff', 'dlyTone', (v) => 200 * Math.pow(90, v),
+       'A lowpass in the feedback path, so each repeat is darker than the last '
+       + 'the way a real echo is.'),
+    mk('PING PONG', m.delay.pingpong, pct(m.delay.pingpong) + '%', '#c77dff', 'dlyPing', (v) => v,
+       'How far the repeats alternate left and right.'),
+    mk('RETURN', m.delay.mix / 1.5, pct(m.delay.mix / 1.5) + '%', '#c77dff', 'dlyMix', (v) => v * 1.5,
+       'How much delay comes back into the mix.'),
+  ]);
+  const timeRow = document.createElement('div');
+  timeRow.className = 'choice-row';
+  timeRow.title = 'Delay time, in beats. A dotted eighth against four-four is '
+    + 'three against four - the repeats cross the beat instead of doubling it.';
+  for (const [v, label] of beats) {
+    const b = document.createElement('button');
+    b.className = 'chip tiny' + (nearest[0] === v ? ' on' : '');
+    b.textContent = label;
+    b.onclick = () => api.send('master', { what: 'dlyBeats', value: v });
+    timeRow.append(b);
+  }
+  delayGroup.append(timeRow);
+  host.append(delayGroup);
+
+  host.append(group('SIDECHAIN', [
+    mk('RELEASE', Math.min(1, m.sidechainRelease / 1.5), Math.round(m.sidechainRelease * 1000) + 'ms',
+       '#ffd479', 'scRelease', (v) => Math.max(0.02, v * 1.5),
+       'How long a ducked track takes to come back up. This is the length of '
+       + 'the pump. The per-track DUCK knobs decide how far each one drops.'),
+    mk('CURVE', (m.sidechainCurve - 0.3) / 5.7, m.sidechainCurve.toFixed(1), '#ffd479',
+       'scCurve', (v) => 0.3 + v * 5.7,
+       'The shape of the recovery. Above 1 the level hangs low and then snaps '
+       + 'back, which is the part you feel.'),
+  ]));
 }
 
 // The parameters of the armed track, fetched when the track or its instrument
@@ -1267,6 +1471,67 @@ function renderKeys() {
     (el) => el.classList.toggle('down', heldKeys.has(el.dataset.k)));
 }
 
+/**
+ * Tempo, shuffle and humanise.
+ *
+ * The three that decide whether a bar feels right rather than what is in it,
+ * which is why they sit together and away from everything else.
+ */
+function openGrooveMenu(anchor) {
+  closeMenu();
+  const menu = document.createElement('div');
+  menu.className = 'menu wide';
+  menu.id = 'track-menu';
+  menu.innerHTML = '<div class="menu-head">GROOVE</div>';
+
+  const knobs = document.createElement('div');
+  knobs.className = 'knobs groove-knobs';
+  const mk = (label, norm, display, tint, onChange, help) => {
+    const w = knob(label, norm, display, tint, onChange);
+    w.classList.add('param');
+    w.title = `${label}\n\n${help}`;
+    return w;
+  };
+  knobs.append(
+    mk('TEMPO', (state.bpm - 60) / 140, state.bpm.toFixed(1), '#5ee6c5',
+       (v) => api.send('bpm', { value: 60 + v * 140 }),
+       'Beats per minute, 60 to 200.'),
+    mk('SWING', state.swing, state.swing < 0.02 ? 'straight' : pct(state.swing) + '%', '#ffb86b',
+       (v) => api.send('swing', { value: v }),
+       'How far the off-steps are pushed late. At zero everything is dead on the '
+       + 'grid; at full they land exactly on the triplet, which is a hard shuffle.'),
+    mk('HUMANISE', state.humanize / 40, Math.round(state.humanize) + 'ms', '#c77dff',
+       (v) => api.send('humanize', { value: v * 40 }),
+       'Timing scatter, in milliseconds. Stable rather than random per pass - the '
+       + 'same step is always off by the same amount, so it reads as a player '
+       + 'with habits rather than as a machine glitching.'),
+  );
+  menu.append(knobs);
+
+  const unitHead = document.createElement('div');
+  unitHead.className = 'menu-head';
+  unitHead.textContent = 'SWING APPLIES EVERY';
+  menu.append(unitHead);
+  const units = document.createElement('div');
+  units.className = 'choice-row pad';
+  units.title = 'Which steps get pushed. Every 2nd is the usual shuffle; larger '
+    + 'groupings swing a slower pulse underneath the fast one.';
+  for (const u of [2, 3, 4, 6, 8]) {
+    const b = document.createElement('button');
+    b.className = 'chip small' + (state.swingUnit === u ? ' on' : '');
+    b.textContent = u + ' steps';
+    b.onclick = () => api.send('swingUnit', { value: u });
+    units.append(b);
+  }
+  menu.append(units);
+
+  document.body.append(menu);
+  const box = anchor.getBoundingClientRect();
+  menu.style.left = Math.min(box.left, innerWidth - menu.offsetWidth - 8) + 'px';
+  menu.style.top = box.bottom + 6 + 'px';
+  setTimeout(() => addEventListener('pointerdown', dismissMenu), 0);
+}
+
 /** Key and scale, so a whole track can be moved into another mode at once. */
 function openKeyMenu(anchor) {
   closeMenu();
@@ -1336,7 +1601,11 @@ function shapeKey() {
     // keys on screen kept playing - and showing - the old one.
     state.key.root, state.key.scaleIndex,
     state.tracks.map((t) =>
-      `${t.name}|${t.engine}|${t.colour}|${t.seqEnabled}|${t.activePattern}|${t.patterns.length}`).join(','),
+      `${t.name}|${t.engine}|${t.colour}|${t.seqEnabled}|${t.activePattern}|${t.patterns.length}`
+      + `|${t.mixer.filterType}`).join(','),
+    // The master panel is drawn from these, and the delay time and limiter are
+    // buttons whose selected state is structural.
+    `${state.master.limiter}|${state.master.delay.beats}|${state.swingUnit}`,
     state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.length,
     state.tracks.map((t) => (t.mixer.mute ? 'm' : '') + (t.mixer.solo ? 's' : '')).join(''),
     selectedStep,
@@ -1362,6 +1631,16 @@ function refreshLive() {
     document.querySelectorAll('#steps .step').forEach((el, i) =>
       el.classList.toggle('here', state.playing && i === track.step));
   }
+  // Meters are values, not structure, so they move every frame without the
+  // view being rebuilt around them.
+  const meterWidth = (t) => Math.min(100, Math.round(Math.sqrt(t.peak ?? 0) * 118)) + '%';
+  document.querySelectorAll('#grid-rows .gh-meter i').forEach((el, ti) => {
+    if (state.tracks[ti]) el.style.width = meterWidth(state.tracks[ti]);
+  });
+  document.querySelectorAll('#mixer .strip-meter i').forEach((el, ti) => {
+    if (state.tracks[ti]) el.style.width = meterWidth(state.tracks[ti]);
+  });
+
   if (view === 'grid') {
     // Every track has its own playhead: with different pattern lengths they
     // are genuinely in different places, and showing one bar sweeping all of
@@ -1391,6 +1670,7 @@ function render() {
     : '';
   $('#midi').classList.toggle('on', midi.length > 0);
   $('#r-bpm').textContent = state.bpm.toFixed(1);
+  $('#r-swing').textContent = state.swing < 0.02 ? '--' : pct(state.swing) + '%';
   $('#r-cycle').textContent = state.cycle + ' st';
   $('#r-peak').textContent = pct(state.peak) + '%';
   $('#play').classList.toggle('on', state.playing);
@@ -1427,6 +1707,36 @@ function render() {
 $('#play').onclick = () => api.send(state && state.playing ? 'stop' : 'play');
 $('#rec').onclick = () => api.send('record');
 $('#project').onclick = (e) => openProjectMenu(e.currentTarget);
+
+// Tempo: drag the number, or click for the rest of the groove controls. The
+// drag is there because nudging a tempo two BPM is a thing you do constantly
+// and should not need a panel for.
+{
+  const el = $('#groove');
+  let dragged = false;
+  el.addEventListener('pointerdown', (e) => {
+    const startY = e.clientY, startBpm = state.bpm;
+    dragged = false;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      if (Math.abs(ev.clientY - startY) < 4) return;
+      dragged = true;
+      interacting = true;
+      const next = Math.max(40, Math.min(240, startBpm + (startY - ev.clientY) * 0.25));
+      $('#r-bpm').textContent = next.toFixed(1);
+      api.send('bpm', { value: next });
+    };
+    const up = () => {
+      el.releasePointerCapture(e.pointerId);
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      interacting = false;
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+  });
+  el.onclick = (e) => { if (!dragged) openGrooveMenu(e.currentTarget); };
+}
 $('#add-drum').onclick = () => api.send('addTrack', { kind: 'drum' });
 $('#add-synth').onclick = () => api.send('addTrack', { kind: 'synth' });
 

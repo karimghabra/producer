@@ -174,8 +174,8 @@ section { padding:14px; overflow:auto; min-width:0; }
 .grow { display:grid; grid-template-columns:150px 1fr; gap:8px; align-items:stretch; }
 .grow.muted { opacity:.42; }
 
-.grow-head { display:grid; grid-template-columns:1fr auto; align-items:center; gap:6px;
-             padding:6px 9px 6px 12px; position:relative; border-radius:8px;
+.grow-head { display:grid; grid-template-columns:1fr auto; align-content:center; gap:1px 6px;
+             padding:6px 9px 7px 12px; position:relative; border-radius:8px;
              background:rgba(22,28,41,.5); border:1px solid var(--line); cursor:pointer; }
 .grow-head:hover { border-color:#33405a; }
 .grow.sel .grow-head { border-color:var(--c);
@@ -188,7 +188,15 @@ section { padding:14px; overflow:auto; min-width:0; }
            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .gh-sub { grid-column:1; grid-row:2; font:9px var(--mono); color:var(--dimmer);
           white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.gh-badges { grid-column:2; grid-row:1/3; display:flex; gap:3px; align-self:center; }
+.gh-badges { grid-column:2; grid-row:1/4; display:flex; gap:3px; align-self:center; }
+
+.readout-btn { display:flex; flex-direction:column; gap:2px; align-items:flex-start;
+               cursor:ns-resize; padding:2px 6px; margin:-2px -6px; border-radius:6px; }
+.readout-btn:hover { background:rgba(22,28,41,.6); }
+.readout-btn label { cursor:inherit; }
+.menu-foot { padding:7px 10px 4px; font-size:10px; line-height:1.5; color:var(--dimmer);
+             border-top:1px solid var(--line-soft); margin-top:4px; max-width:250px; }
+.groove-knobs { grid-template-columns:repeat(3,1fr); padding:2px 9px 8px; }
 
 .grow-cells { display:grid; gap:4px; }
 .gcell { position:relative; border-radius:5px; min-height:30px;
@@ -333,12 +341,50 @@ input[type=range]::-webkit-slider-thumb:active { cursor:grabbing; }
 .take:not(.has-take) #take-canvas,
 .take:not(.has-take) .take-controls { display:none; }
 
+/* ---------- track rate + meters ---------- */
+.gh-rate { grid-column:1; grid-row:3; justify-self:start; margin-top:3px;
+           padding:2px 6px; border-radius:4px; background:var(--ink0);
+           border:1px solid var(--line); font:600 8.5px var(--mono); color:var(--dim); }
+.gh-rate:hover { border-color:var(--fitted); color:var(--fitted); }
+.gh-meter { grid-column:1/3; grid-row:4; height:3px; border-radius:2px;
+            background:rgba(0,0,0,.4); overflow:hidden; margin-top:5px; }
+.gh-meter i { display:block; height:100%; width:0; background:var(--c);
+              transition:width .06s linear; }
+
+.strip-meter { height:4px; border-radius:2px; background:rgba(0,0,0,.4);
+               overflow:hidden; margin-top:9px; }
+.strip-meter i { display:block; height:100%; width:0; background:var(--c);
+                 transition:width .06s linear; }
+
 /* ---------- mixer ---------- */
 .mixer { display:flex; gap:9px; align-items:flex-start; }
-.strip { flex:1; min-width:96px; max-width:150px; background:rgba(22,28,41,.5);
+.strip { flex:1; min-width:104px; max-width:160px; background:rgba(22,28,41,.5);
          border:1px solid var(--line); border-radius:9px; padding:10px 8px; }
 .strip h3 { font-size:11px; text-align:center; color:var(--c); margin-bottom:8px; }
 .knobs { display:grid; grid-template-columns:1fr 1fr; gap:4px; }
+
+/* ---------- channel filter ---------- */
+.filt { margin-top:9px; padding-top:8px; border-top:1px solid var(--line-soft); }
+.filt > label { display:block; font:700 8px var(--sans); letter-spacing:.14em;
+                color:var(--dimmer); margin-bottom:5px; text-align:center; }
+.filt.on > label { color:var(--c); }
+.filt-types { display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-bottom:6px; }
+.filt-types .chip { padding:3px 0; text-align:center; }
+
+/* ---------- master ---------- */
+.master { display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;
+          margin-top:14px; padding:12px 14px 13px; background:rgba(7,9,16,.5);
+          border:1px solid var(--line-soft); border-radius:10px; }
+.mgroup { display:flex; flex-direction:column; gap:7px; padding-right:12px;
+          border-right:1px solid var(--line-soft); }
+.mgroup:last-child { border-right:none; padding-right:0; }
+.mgroup h4 { font:700 8.5px var(--sans); letter-spacing:.15em; color:var(--dimmer); }
+/* A row, not a grid. auto-fit inside a flex item with no width to measure
+   collapsed every group to a single column, so the master panel stacked
+   vertically and ran off the bottom of the view. */
+.mgroup .knobs { display:flex; gap:6px; }
+.mgroup .choice-row { max-width:300px; }
+.mgroup .chip.small { align-self:flex-start; }
 
 /* Knobs are drawn, not styled. A range input can never look like this. */
 .knob { display:flex; flex-direction:column; align-items:center; gap:2px; cursor:ns-resize; }
