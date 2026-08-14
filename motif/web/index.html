@@ -10,7 +10,8 @@
       <button id="play" class="btn mint">PLAY</button>
     </div>
     <nav id="views">
-      <button data-view="steps" class="tab on">STEPS</button>
+      <button data-view="grid" class="tab on">GRID</button>
+      <button data-view="steps" class="tab">STEPS</button>
       <button data-view="mix" class="tab">MIX</button>
       <button data-view="sound" class="tab">SOUND</button>
     </nav>
@@ -36,7 +37,19 @@
     </aside>
 
     <section id="stage">
-      <div id="view-steps" class="view on">
+      <!-- Every track at once. A beat is the relationship between the kick,
+           the clap and the hats, and you cannot hear that relationship by
+           looking at one of them at a time. -->
+      <div id="view-grid" class="view on">
+        <div id="grid-ruler" class="grid-ruler"></div>
+        <div id="grid-rows" class="grid-rows"></div>
+        <div class="grid-legend">
+          Click any step on any track &nbsp;|&nbsp; the faded half is the pattern
+          repeating, so tracks of different lengths show where they drift apart
+        </div>
+      </div>
+
+      <div id="view-steps" class="view">
         <div id="pattern-bar" class="bar"></div>
         <div id="pattern-shape" class="shape"></div>
         <div id="steps" class="steps"></div>

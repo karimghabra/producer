@@ -20,7 +20,7 @@ const api = {
 
 let state = null;
 let presets = { drums: [], synths: [] };
-let view = 'steps';
+let view = 'grid';
 let selected = 0;
 let selectedStep = 0;
 const heldKeys = new Set();
@@ -746,6 +746,106 @@ function drawTake() {
   g.fillText('FITTED', pad + 48, 12);
 }
 
+// --------------------------------------------------------------------------
+// Grid — every track at once
+//
+// The view you build a beat in. Each track keeps its own pattern length, and
+// all of them are drawn against a common step width, so a sixteen and a twelve
+// visibly pull apart instead of both being stretched to look the same. The
+// faded cells past a pattern's end are that pattern repeating: where the drift
+// actually shows.
+// --------------------------------------------------------------------------
+
+/** How many columns to draw: the longest pattern, within reason. */
+function gridColumns() {
+  const lengths = state.tracks.map((t) => t.patterns[t.activePattern]?.length ?? 16);
+  return Math.min(Math.max(...lengths, 8), 32);
+}
+
+function renderGrid() {
+  const cols = gridColumns();
+
+  const ruler = $('#grid-ruler');
+  ruler.innerHTML = '<div class="gr-head"></div>';
+  const marks = document.createElement('div');
+  marks.className = 'gr-marks';
+  marks.style.gridTemplateColumns = `repeat(${cols},1fr)`;
+  // Numbered by beat rather than by step: the armed track's resolution is the
+  // one you are counting in, and every fourth box being labelled is what makes
+  // a grid readable at a glance.
+  const res = state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.resolution || 4;
+  for (let i = 0; i < cols; i++) {
+    const m = document.createElement('span');
+    m.className = i % res === 0 ? 'beat' : '';
+    m.textContent = i % res === 0 ? String(i / res + 1) : '';
+    marks.append(m);
+  }
+  ruler.append(marks);
+
+  const host = $('#grid-rows');
+  host.innerHTML = '';
+
+  state.tracks.forEach((t, ti) => {
+    const pat = t.patterns[t.activePattern];
+    if (!pat) return;
+    const tint = hex(t.colour);
+
+    const row = document.createElement('div');
+    row.className = 'grow' + (ti === selected ? ' sel' : '') + (t.mixer.mute ? ' muted' : '');
+    row.style.setProperty('--c', tint);
+
+    const head = document.createElement('div');
+    head.className = 'grow-head';
+    head.innerHTML =
+      `<div class="gh-name">${esc(t.name)}</div>
+       <div class="gh-sub">${esc(pat.name)} &middot; ${pat.length}</div>`;
+    const badges = document.createElement('div');
+    badges.className = 'gh-badges';
+    for (const [key, cls, on] of [['solo', 'on-s', t.mixer.solo], ['mute', 'on-m', t.mixer.mute]]) {
+      const b = document.createElement('button');
+      b.className = 'badge ' + (on ? cls : '');
+      b.textContent = key[0].toUpperCase();
+      b.onclick = (e) => { e.stopPropagation(); api.send(key, { track: ti, value: on ? 0 : 1 }); };
+      badges.append(b);
+    }
+    head.append(badges);
+    // Clicking the name arms the track, so the keyboard and the detail view
+    // follow what you are looking at.
+    head.onclick = () => { selected = ti; api.send('selectTrack', { track: ti }); };
+    row.append(head);
+
+    const cells = document.createElement('div');
+    cells.className = 'grow-cells';
+    cells.style.gridTemplateColumns = `repeat(${cols},1fr)`;
+
+    for (let i = 0; i < cols; i++) {
+      const step = i % pat.length;
+      const repeat = i >= pat.length;
+      const s = pat.steps[step];
+      const el = document.createElement('button');
+      el.className = 'gcell'
+        + (s?.on ? ' on' : '')
+        + (repeat ? ' ghost' : '')
+        + (i % res === 0 ? ' beat' : '')
+        + (step === 0 && repeat ? ' wrap' : '')
+        + (state.playing && step === t.step ? ' here' : '');
+      if (s?.on) el.style.setProperty('--v', 0.35 + 0.65 * s.vel);
+      el.title = `${t.name} - step ${step + 1}`;
+      el.onclick = () => {
+        api.send('toggleStep', { track: ti, step });
+        // Editing a track is a statement about which one you are working on.
+        if (ti !== selected) { selected = ti; api.send('selectTrack', { track: ti }); }
+        selectedStep = step;
+        lastShape = null;
+        render();
+      };
+      cells.append(el);
+    }
+    row.append(cells);
+    host.append(row);
+  });
+}
+
 function renderMix() {
   const host = $('#mixer');
   host.innerHTML = '';
@@ -1105,9 +1205,10 @@ function shapeKey() {
     state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.length,
     state.tracks.map((t) => (t.mixer.mute ? 'm' : '') + (t.mixer.solo ? 's' : '')).join(''),
     selectedStep,
-    // The whole pattern, not just which steps are on: editing a velocity or a
-    // ratchet has to redraw, and those are what the detail panel exists for.
-    JSON.stringify(state.tracks[selected]?.patterns[state.tracks[selected].activePattern]),
+    // Every visible pattern, not just which steps are on: editing a velocity
+    // or a ratchet has to redraw, and the grid shows all the tracks at once,
+    // so a change to any of them is a change to what is on screen.
+    state.tracks.map((t) => JSON.stringify(t.patterns[t.activePattern])).join(''),
   ].join('#');
 }
 
@@ -1125,6 +1226,18 @@ function refreshLive() {
     const track = state.tracks[selected];
     document.querySelectorAll('#steps .step').forEach((el, i) =>
       el.classList.toggle('here', state.playing && i === track.step));
+  }
+  if (view === 'grid') {
+    // Every track has its own playhead: with different pattern lengths they
+    // are genuinely in different places, and showing one bar sweeping all of
+    // them would be a lie about what the engine is doing.
+    document.querySelectorAll('#grid-rows .grow').forEach((row, ti) => {
+      const t = state.tracks[ti];
+      const pat = t?.patterns[t.activePattern];
+      if (!pat) return;
+      row.querySelectorAll('.gcell').forEach((el, i) =>
+        el.classList.toggle('here', state.playing && (i % pat.length) === t.step));
+    });
   }
 }
 
@@ -1164,7 +1277,8 @@ function render() {
   lastShape = shape;
 
   renderTracks();
-  if (view === 'steps') renderSteps();
+  if (view === 'grid') renderGrid();
+  else if (view === 'steps') renderSteps();
   else if (view === 'mix') renderMix();
   else renderSound();
   renderKeys();

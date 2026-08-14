@@ -335,6 +335,60 @@ check(now.tracks.length === startCount &&
 await cmd({ type: 'selectTrack', track: 0 });
 await page.waitForTimeout(300);
 
+// --- grid: every track at once -----------------------------------------------
+await page.locator('[data-view="grid"]').click();
+await page.waitForTimeout(400);
+
+const gridRows = await page.locator('#grid-rows .grow').count();
+check(gridRows === 6, 'the grid shows every track', `${gridRows} rows`);
+const rowNames = await page.locator('#grid-rows .gh-name').allTextContents();
+check(rowNames.join(',') === 'Kick,Clap,Hats,Snare,Bass,Lead',
+      'in song order', rowNames.join(' '));
+
+// Each row must show its own pattern, not the armed one repeated.
+const litPerRow = [];
+for (let r = 0; r < 6; r++) {
+  litPerRow.push(await page.locator('#grid-rows .grow').nth(r)
+    .locator('.gcell.on:not(.ghost)').count());
+}
+check(new Set(litPerRow).size > 1, 'each row shows its own pattern',
+      `steps lit per row: ${litPerRow.join(',')}`);
+check(litPerRow[0] === 4, 'and the kick is still four on the floor', `${litPerRow[0]} lit`);
+
+// Editing from the grid must reach the engine, on a track that is not armed.
+await cmd({ type: 'selectTrack', track: 0 });
+await page.waitForTimeout(300);
+const beforeHat = (await engine()).tracks[2].patterns[0].steps[0].on;
+await page.locator('#grid-rows .grow').nth(2).locator('.gcell').first().click();
+await page.waitForTimeout(350);
+const afterHat = (await engine()).tracks[2].patterns[0].steps[0].on;
+check(beforeHat !== afterHat, 'clicking a cell edits that track',
+      `hats step 1 ${beforeHat} -> ${afterHat}`);
+check((await engine()).tracks[2].armed === true, 'and arms the track you edited');
+await page.locator('#grid-rows .grow').nth(2).locator('.gcell').first().click();
+await page.waitForTimeout(300);
+
+// Different pattern lengths must show as a shorter run plus a dimmed repeat.
+await cmd({ type: 'selectTrack', track: 2 });
+await cmd({ type: 'patternLength', value: 12, track: 2 });
+await page.waitForTimeout(400);
+const ghosts = await page.locator('#grid-rows .grow').nth(2).locator('.gcell.ghost').count();
+const kickGhosts = await page.locator('#grid-rows .grow').nth(0).locator('.gcell.ghost').count();
+check(ghosts === 4 && kickGhosts === 0,
+      'a shorter pattern shows where it repeats',
+      `12-step track has ${ghosts} repeat cells, 16-step track has ${kickGhosts}`);
+
+// Solo and mute from the grid.
+await page.locator('#grid-rows .grow').nth(1).locator('.badge', { hasText: 'M' }).click();
+await page.waitForTimeout(300);
+check((await engine()).tracks[1].mixer.mute === true, 'mute works from the grid');
+await page.locator('#grid-rows .grow').nth(1).locator('.badge', { hasText: 'M' }).click();
+await page.waitForTimeout(250);
+
+await cmd({ type: 'newSong' });
+await page.locator('[data-view="steps"]').click();
+await page.waitForTimeout(400);
+
 // --- step detail -------------------------------------------------------------
 //
 // The engine has always had velocity, ratchet, nudge and trig conditions.
