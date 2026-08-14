@@ -89,6 +89,14 @@ await page.waitForTimeout(300);
 
 await cmd({ type: 'newSong' });
 await cmd({ type: 'stop' });
+
+// Recording is a toggle, so a previous run - or the stress test, which clicks
+// every button it can find - can leave the engine armed. Pressing it again
+// here would commit an empty take instead of starting one.
+if ((await engine()).recording) await cmd({ type: 'record' });
+await cmd({ type: 'clearTake' });
+await cmd({ type: 'songMode', value: 0 });
+
 await cmd({ type: 'selectTrack', track: 0 });
 await page.locator('[data-view="steps"]').click();
 await page.waitForTimeout(500);
@@ -998,8 +1006,12 @@ const played = await page.evaluate(async ({ noteMs, count }) => {
     const wait = target - performance.now();
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     const note = pitches[i % pitches.length];
-    send('noteOn', { note, velocity: 0.85 });
-    setTimeout(() => send('noteOff', { note }), noteMs * 0.6);
+    // Stamped here, at the moment of the "press", exactly as the interface
+    // does it - so what is measured is the rhythm played, not the rhythm the
+    // requests happened to arrive in.
+    const at = performance.now() / 1000;
+    send('noteOn', { note, velocity: 0.85, at });
+    setTimeout(() => send('noteOff', { note, at: performance.now() / 1000 }), noteMs * 0.6);
   }
   await new Promise((r) => setTimeout(r, noteMs));
   return count;

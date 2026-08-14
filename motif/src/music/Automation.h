@@ -54,10 +54,19 @@ const AutoTarget* findAutoTarget(const std::string& id);
  * `sectionBar` is how far into the section we are, in bars. Lanes are applied
  * in order, so the last one to write a target wins - which only matters if a
  * section carries two lanes for the same thing.
+ *
+ * Fills a state the caller owns rather than returning one. This runs once per
+ * audio block, and returning a vector by value means a heap allocation on the
+ * audio thread every few milliseconds - which is the kind of thing that is
+ * fine until the machine is busy and then is a dropout.
  */
-AutomationState evaluate(const Song& song, const Section& section, double sectionBar);
+void evaluateInto(const Song& song, const Section& section, double sectionBar,
+                  AutomationState& out);
 
 /** The overlay with nothing automated: just what the song says. */
-AutomationState passthrough(const Song& song);
+void passthroughInto(const Song& song, AutomationState& out);
+
+/** Make room up front, so the render loop never grows these. */
+void reserveTracks(AutomationState& state, size_t tracks);
 
 } // namespace motif

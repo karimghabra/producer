@@ -70,6 +70,13 @@ std::vector<RawNote> perform(double bpm, int subdiv, int bars, int beatsPerBar,
 
 double pctErr(double got, double want) { return std::abs(got - want) / want * 100.0; }
 
+/** The first track's mixer after automation, for the arrangement checks. */
+Mixer at(const Song& song, const Section& section, double bar) {
+    AutomationState s;
+    evaluateInto(song, section, bar, s);
+    return s.mixers.empty() ? Mixer{} : s.mixers[0];
+}
+
 } // namespace
 
 int main() {
@@ -501,8 +508,9 @@ int main() {
         sweep.points = { { 0.0, 0.0f }, { 2.0, 1.0f } };
         sec.lanes.push_back(sweep);
 
-        const auto atStart = evaluate(song, sec, 0.0);
-        const auto atEnd = evaluate(song, sec, 2.0);
+        AutomationState atStart, atEnd;
+        evaluateInto(song, sec, 0.0, atStart);
+        evaluateInto(song, sec, 2.0, atEnd);
         check(atStart.mixers[0].filterCutoff < 30.0f && atEnd.mixers[0].filterCutoff > 19000.0f,
               "a sweep moves the value across the section",
               std::to_string(int(atStart.mixers[0].filterCutoff)) + " -> "
@@ -525,11 +533,11 @@ int main() {
         shortRamp.points = { { 2.0, 0.0f }, { 4.0, 1.0f } };
         partial.lanes.push_back(shortRamp);
 
-        const float before = evaluate(song, partial, 0.5).mixers[0].gain;
-        const float atStartOfRamp = evaluate(song, partial, 2.0).mixers[0].gain;
-        const float halfway = evaluate(song, partial, 3.0).mixers[0].gain;
-        const float atEndOfRamp = evaluate(song, partial, 4.0).mixers[0].gain;
-        const float after = evaluate(song, partial, 7.5).mixers[0].gain;
+        const float before = at(song, partial, 0.5).gain;
+        const float atStartOfRamp = at(song, partial, 2.0).gain;
+        const float halfway = at(song, partial, 3.0).gain;
+        const float atEndOfRamp = at(song, partial, 4.0).gain;
+        const float after = at(song, partial, 7.5).gain;
         check(before == atStartOfRamp && std::abs(before) < 1e-6f,
               "before a ramp starts it holds its first value",
               std::to_string(before).substr(0, 5));
@@ -546,9 +554,9 @@ int main() {
         flick.param = "gain";
         flick.points = { { 1.0, 0.0f }, { 1.25, 1.0f } };
         tiny.lanes.push_back(flick);
-        check(std::abs(evaluate(song, tiny, 1.125).mixers[0].gain - 0.75f) < 0.01f,
+        check(std::abs(at(song, tiny, 1.125).gain - 0.75f) < 0.01f,
               "a ramp can be a quarter of a bar long",
-              std::to_string(evaluate(song, tiny, 1.125).mixers[0].gain).substr(0, 5));
+              std::to_string(at(song, tiny, 1.125).gain).substr(0, 5));
 
         // One curve, several tracks.
         Section shared;
@@ -558,7 +566,8 @@ int main() {
         group.param = "cutoff";
         group.points = { { 0.0, 0.0f }, { 4.0, 1.0f } };
         shared.lanes.push_back(group);
-        const auto driven = evaluate(song, shared, 4.0);
+        AutomationState driven;
+        evaluateInto(song, shared, 4.0, driven);
         check(driven.mixers[0].filterCutoff > 19000.0f && driven.mixers[1].filterCutoff > 19000.0f
                   && driven.mixers[2].filterCutoff > 19000.0f,
               "one curve drives every track selected for it",
@@ -574,7 +583,8 @@ int main() {
         ghost.param = "gain";
         ghost.points = { { 0.0, 1.0f } };
         stale.lanes.push_back(ghost);
-        const auto survived = evaluate(song, stale, 0.0);
+        AutomationState survived;
+        evaluateInto(song, stale, 0.0, survived);
         check(survived.mixers.size() == song.tracks.size(),
               "a lane on a deleted track is ignored rather than fatal", "");
     }
@@ -630,6 +640,124 @@ int main() {
         renderBars(1.0);
         check(engine.currentSection() == 0, "then looping back to the top",
               "section " + std::to_string(engine.currentSection()));
+    }
+
+    // --- a real take, as measured through the interface ----------------------
+    //
+    // These are the onset times of sixteen eighth notes played at 128 BPM,
+    // captured from the running application. Kept because a fit that works on
+    // synthesised input and not on this one is the case that matters.
+    std::printf("\nA take measured through the interface:\n");
+    {
+        const double ms[] = { 0, 233.8, 473.5, 702.9, 939, 1175.1, 1411.2, 1640.8,
+                              1876.6, 2112.6, 2349, 2578, 2812.5, 3047.2, 3282.6, 3516.2 };
+        std::vector<RawNote> notes;
+        for (double m : ms) notes.push_back({ m / 1000.0, m / 1000.0 + 0.14, 48, 0.85f });
+
+        FitOptions opts;
+        opts.bpmPrior = 124.0;              // what the song was set to
+        opts.beatsPerBar = 4;
+        const auto f = inferGrid(notes, opts);
+        check(pctErr(f.bpm, 128.0) < 3.0, "the tempo comes back from real playing",
+              std::to_string(f.bpm).substr(0, 6) + " bpm, subdiv "
+                  + std::to_string(f.subdivision));
+        check(f.confidence > 0.8, "and the fit is confident",
+              std::to_string(int(f.confidence * 100)) + "%");
+
+        // Note-offs can arrive out of order over HTTP, which pairs a start with
+        // an earlier end. Lengths are then nonsense, but the onsets are still
+        // the onsets and the grid must not care.
+        std::vector<RawNote> scrambled = notes;
+        for (size_t i = 0; i < scrambled.size(); i += 2)
+            scrambled[i].endSec = scrambled[i].startSec - 0.09;
+        const auto sf = inferGrid(scrambled, opts);
+        check(pctErr(sf.bpm, f.bpm) < 0.01 && sf.confidence > 0.8,
+              "and a scrambled note-off does not disturb it",
+              std::to_string(sf.bpm).substr(0, 6) + " bpm, "
+                  + std::to_string(int(sf.confidence * 100)) + "%");
+    }
+
+    // --- track edits keep everything pointing at the right track -------------
+    //
+    // Scenes index their pattern list by track and lanes hold track indices, so
+    // any change to the track list changes what they mean. This was found by
+    // the stress test: deleting a track left every scene playing the wrong
+    // patterns on the wrong tracks, and nothing said so.
+    std::printf("\nTrack edits:\n");
+    {
+        auto build = [] {
+            Song s = makeDefaultSong();          // Kick Clap Hats Snare Bass Lead
+            Scene sc;
+            sc.name = "All";
+            for (size_t i = 0; i < s.tracks.size(); ++i) sc.patterns.push_back(int(i % 2));
+            s.scenes.push_back(sc);
+            Section sec;
+            sec.bars = 4;
+            AutoLane lane;
+            lane.param = "cutoff";
+            lane.tracks = { 1, 4 };              // Clap and Bass
+            lane.points = { { 0.0, 0.0f }, { 4.0, 1.0f } };
+            sec.lanes.push_back(lane);
+            s.arrangement.push_back(sec);
+            return s;
+        };
+
+        {
+            Song s = build();
+            const int clapPattern = s.scenes[0].patterns[1];
+            removeTrack(s, 0);                   // drop the Kick
+            check(s.scenes[0].patterns.size() == s.tracks.size(),
+                  "removing a track resizes every scene",
+                  std::to_string(s.scenes[0].patterns.size()) + " entries for "
+                      + std::to_string(s.tracks.size()) + " tracks");
+            check(s.tracks[0].name == "Clap" && s.scenes[0].patterns[0] == clapPattern,
+                  "and the scene follows the track it belonged to",
+                  s.tracks[0].name + " keeps pattern " + std::to_string(s.scenes[0].patterns[0]));
+            check(s.arrangement[0].lanes[0].tracks == std::vector<int>({ 0, 3 }),
+                  "and automation is renumbered with it",
+                  "lane now drives " + std::to_string(s.arrangement[0].lanes[0].tracks[0])
+                      + "," + std::to_string(s.arrangement[0].lanes[0].tracks[1]));
+        }
+        {
+            Song s = build();
+            removeTrack(s, 1);                   // a track the lane drove
+            check(s.arrangement[0].lanes[0].tracks == std::vector<int>({ 3 }),
+                  "a deleted track drops out of the lanes that drove it",
+                  std::to_string(s.arrangement[0].lanes[0].tracks.size()) + " left");
+        }
+        {
+            Song s = build();
+            Track fresh;
+            fresh.name = "New";
+            addTrack(s, fresh, 0);               // inserted at the front
+            check(s.scenes[0].patterns.size() == s.tracks.size()
+                      && s.scenes[0].patterns[0] == -1,
+                  "a track added before a scene existed plays nothing in it",
+                  "entry " + std::to_string(s.scenes[0].patterns[0]));
+            check(s.tracks[2].name == "Clap"
+                      && s.arrangement[0].lanes[0].tracks == std::vector<int>({ 2, 5 }),
+                  "and everything after it is renumbered", "");
+        }
+        {
+            Song s = build();
+            const int leadPattern = s.scenes[0].patterns[5];
+            moveTrack(s, 5, 0);                  // Lead to the front
+            check(s.tracks[0].name == "Lead" && s.scenes[0].patterns[0] == leadPattern,
+                  "reordering carries each scene entry with its track",
+                  s.tracks[0].name + " keeps pattern " + std::to_string(s.scenes[0].patterns[0]));
+            check(s.arrangement[0].lanes[0].tracks == std::vector<int>({ 2, 5 }),
+                  "and automation follows the move",
+                  std::to_string(s.arrangement[0].lanes[0].tracks[0]) + ","
+                      + std::to_string(s.arrangement[0].lanes[0].tracks[1]));
+        }
+        {
+            Song s = makeDefaultSong();
+            while (s.tracks.size() > 1) removeTrack(s, 0);
+            removeTrack(s, 0);
+            check(s.tracks.size() == 1, "the last track cannot be removed",
+                  std::to_string(s.tracks.size()) + " left");
+            check(s.tracks[0].armed, "and something is always armed", "");
+        }
     }
 
     // --- the project format ------------------------------------------------

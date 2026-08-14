@@ -114,16 +114,20 @@ const AutoTarget* findAutoTarget(const std::string& id) {
     return nullptr;
 }
 
-AutomationState passthrough(const Song& song) {
-    AutomationState s;
-    s.mixers.reserve(song.tracks.size());
-    for (const auto& t : song.tracks) s.mixers.push_back(t.mixer);
-    s.master = song.master;
-    return s;
+void reserveTracks(AutomationState& state, size_t tracks) {
+    state.mixers.reserve(tracks);
 }
 
-AutomationState evaluate(const Song& song, const Section& section, double sectionBar) {
-    AutomationState s = passthrough(song);
+void passthroughInto(const Song& song, AutomationState& s) {
+    // assign() over a reserved vector copies into storage that already exists.
+    s.mixers.clear();
+    for (const auto& t : song.tracks) s.mixers.push_back(t.mixer);
+    s.master = song.master;
+}
+
+void evaluateInto(const Song& song, const Section& section, double sectionBar,
+                  AutomationState& s) {
+    passthroughInto(song, s);
     for (const auto& lane : section.lanes) {
         const AutoTarget* target = findAutoTarget(lane.param);
         if (!target || lane.points.empty() || !target->apply) continue;
@@ -134,7 +138,6 @@ AutomationState evaluate(const Song& song, const Section& section, double sectio
         // deleted is skipped inside apply rather than checked for here.
         for (int track : lane.tracks) target->apply(s, track, value);
     }
-    return s;
 }
 
 } // namespace motif

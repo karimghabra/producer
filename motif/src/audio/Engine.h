@@ -86,9 +86,21 @@ public:
     void editSong(const std::function<void(Song&)>& fn);
 
     // --- playing ----------------------------------------------------------
-    /** Play a note on the armed track. */
-    void noteOn(int midiNote, float velocity);
-    void noteOff(int midiNote);
+    /**
+     * Play a note on the armed track.
+     *
+     * `atSec` is when the note was actually played, on whatever clock the
+     * caller has, or negative to mean "now".
+     *
+     * It matters because notes arrive over HTTP, and a request can be queued
+     * behind others or overtaken by a later one. Timestamping on arrival meant
+     * the recorded rhythm was the rhythm of the network rather than the
+     * rhythm of the playing - fine when idle, and wrong exactly when the
+     * interface is busy. Only relative times are used, so the caller's clock
+     * needs no relationship to ours beyond being steady.
+     */
+    void noteOn(int midiNote, float velocity, double atSec = -1.0);
+    void noteOff(int midiNote, double atSec = -1.0);
     void allNotesOff();
     /** Fire a track's instrument once, ignoring the sequencer. */
     void auditionTrack(int trackIndex, int midiNote, float velocity);
@@ -166,6 +178,15 @@ private:
      * the race itself is undefined behaviour.
      */
     std::array<std::atomic<float>, kMaxTracks> trackPeaks_{};
+
+    /**
+     * The mixer values in effect for the current block, after automation.
+     *
+     * A member rather than a local, so the render loop refills storage it
+     * already has instead of allocating a vector on the audio thread every few
+     * milliseconds. Reserved once in prepare().
+     */
+    AutomationState live_;
 
     Song song_;
     mutable std::mutex songLock_;

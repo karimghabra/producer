@@ -73,6 +73,13 @@ private:
     /** Re-fit the take already captured, at the current options. */
     void refitTake();
 
+    /**
+     * Fitting options for right now: the stored preferences, plus the song's
+     * current tempo and metre. Rebuilt rather than remembered, so a decision
+     * made for one take cannot outlive it.
+     */
+    FitOptions fitOptionsNow(bool lockToSongTempo) const;
+
     /** Replace the last installed take pattern with `take`. */
     void installTake(const Take& take, bool adoptTempo);
 

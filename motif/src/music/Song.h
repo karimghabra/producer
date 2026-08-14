@@ -329,6 +329,27 @@ struct Song {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Track edits
+//
+// Scenes index their pattern list by track, and automation lanes hold track
+// indices. Adding, removing or reordering a track therefore changes what every
+// scene and every lane refers to - and doing that to song.tracks alone leaves
+// scenes playing the wrong patterns on the wrong tracks, silently.
+//
+// These are the only correct way to change the track list. They exist so that
+// invariant is maintained by the song rather than remembered by each caller.
+// ---------------------------------------------------------------------------
+
+/** Insert a track, keeping scenes and automation aligned. `at` < 0 appends. */
+void addTrack(Song& song, Track track, int at = -1);
+
+/** Remove a track. Refuses to remove the last one. */
+void removeTrack(Song& song, int index);
+
+/** Reorder a track, remapping everything that referred to it by index. */
+void moveTrack(Song& song, int from, int to);
+
 /**
  * Turn a fitted performance into an editable pattern.
  *

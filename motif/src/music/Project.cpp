@@ -344,6 +344,30 @@ bool songFromJson(const std::string& text, Song& out, std::string& error) {
         if (sec.scene < 0 || sec.scene >= int(song.scenes.size())) sec.scene = 0;
     if (song.scenes.empty()) { song.arrangement.clear(); song.songMode = false; }
 
+    // Scenes index by track and lanes hold track indices, so a file whose
+    // track count disagrees with them has to be brought back into line here
+    // rather than left to play the wrong patterns on the wrong tracks.
+    const int trackCount = int(song.tracks.size());
+    for (auto& scene : song.scenes) {
+        scene.patterns.resize(size_t(trackCount), -1);
+        for (size_t t = 0; t < scene.patterns.size(); ++t) {
+            const int limit = int(song.tracks[t].patterns.size());
+            if (scene.patterns[t] >= limit) scene.patterns[t] = limit ? limit - 1 : -1;
+        }
+    }
+    for (auto& sec : song.arrangement) {
+        for (auto& lane : sec.lanes) {
+            lane.tracks.erase(std::remove_if(lane.tracks.begin(), lane.tracks.end(),
+                                             [&](int t) { return t < 0 || t >= trackCount; }),
+                              lane.tracks.end());
+            for (auto& p : lane.points) {
+                p.bar = std::clamp(p.bar, 0.0, double(std::max(1, sec.bars)));
+                p.value = std::clamp(p.value, 0.0f, 1.0f);
+            }
+        }
+    }
+    if (song.sidechainSource >= trackCount) song.sidechainSource = -1;
+
     // Exactly one armed track, whatever the file says.
     int armed = -1;
     for (size_t i = 0; i < song.tracks.size(); ++i)

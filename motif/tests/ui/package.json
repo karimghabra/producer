@@ -6,7 +6,10 @@
   "scripts": {
     "verify": "node verify.mjs",
     "verify:shots": "node verify.mjs --shot shots/ui.png",
-    "verify:browser": "node verify.mjs --browser"
+    "verify:browser": "node verify.mjs --browser",
+    "stress": "node stress.mjs",
+    "stress:long": "node stress.mjs --steps 400",
+    "campaign": "node campaign.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0"

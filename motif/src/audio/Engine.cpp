@@ -154,6 +154,8 @@ void Engine::prepare(double sampleRate, int /*blockSize*/) {
     limiter_.prepare(sampleRate_);
     sampleClock_ = 0;
     positionBeatsLocal_ = 0.0;
+    // Taken now, so the render loop never has to grow it.
+    reserveTracks(live_, kMaxTracks);
     if (song_.tracks.empty()) song_ = makeDefaultSong();
 }
 
@@ -202,7 +204,7 @@ DrumVoice* Engine::allocateDrumVoice(int trackIndex) {
 
 // --- playing ---------------------------------------------------------------
 
-void Engine::noteOn(int midiNote, float velocity) {
+void Engine::noteOn(int midiNote, float velocity, double atSec) {
     int armed = -1;
     Patch patch;
     bool isDrum = false;
@@ -232,19 +234,21 @@ void Engine::noteOn(int midiNote, float velocity) {
 
     if (recording_.load(std::memory_order_relaxed)) {
         std::lock_guard<std::mutex> lock(captureLock_);
-        const double t = double(sampleClock_ - recordStartSample_) / sampleRate_;
+        const double t = atSec >= 0.0 ? atSec
+                       : double(sampleClock_ - recordStartSample_) / sampleRate_;
         held_.push_back({ t, midiNote, velocity });
     }
 }
 
-void Engine::noteOff(int midiNote) {
+void Engine::noteOff(int midiNote, double atSec) {
     for (auto& s : synths_) {
         if (s.voice.active() && s.voice.note() == midiNote) s.voice.release();
     }
 
     if (recording_.load(std::memory_order_relaxed)) {
         std::lock_guard<std::mutex> lock(captureLock_);
-        const double t = double(sampleClock_ - recordStartSample_) / sampleRate_;
+        const double t = atSec >= 0.0 ? atSec
+                       : double(sampleClock_ - recordStartSample_) / sampleRate_;
         for (auto it = held_.rbegin(); it != held_.rend(); ++it) {
             if (it->pitch == midiNote) {
                 captured_.push_back({ it->startSec, t, it->pitch, it->velocity });
@@ -315,15 +319,28 @@ Take Engine::finishRecording(const FitOptions& opts) {
     std::vector<RawNote> notes;
     {
         std::lock_guard<std::mutex> lock(captureLock_);
-        // A note still held when recording stopped is still a note.
-        const double t = double(sampleClock_ - recordStartSample_) / sampleRate_;
-        for (const auto& h : held_) captured_.push_back({ h.startSec, t, h.pitch, h.velocity });
+        // A note still held when recording stopped is still a note. Its end is
+        // taken from the last note that did finish, since our own clock may not
+        // be the one the starts were measured on.
+        double latest = 0.0;
+        for (const auto& c : captured_) latest = std::max(latest, c.endSec);
+        for (const auto& h : held_) latest = std::max(latest, h.startSec);
+        for (const auto& h : held_)
+            captured_.push_back({ h.startSec, std::max(latest, h.startSec + 0.05),
+                                  h.pitch, h.velocity });
         held_.clear();
         notes = captured_;
     }
 
     std::sort(notes.begin(), notes.end(),
               [](const RawNote& a, const RawNote& b) { return a.startSec < b.startSec; });
+
+    // Rebase on the first note. Starts may have come from the caller's clock,
+    // whose origin means nothing here - only the spacing between them does.
+    if (!notes.empty()) {
+        const double origin = notes.front().startSec;
+        for (auto& n : notes) { n.startSec -= origin; n.endSec -= origin; }
+    }
     return fitTake(notes, opts);
 }
 
@@ -426,7 +443,7 @@ void Engine::render(float* left, float* right, int numSamples) {
     // The result is an overlay, not a write. Playing a section that opens a
     // filter must not leave the filter open when the transport stops - the
     // song says what the mix is, automation says what it is doing right now.
-    AutomationState live = passthrough(song_);
+    passthroughInto(song_, live_);
     scenePattern_.fill(-1);
 
     const bool inSong = song_.songMode && !song_.arrangement.empty() && !song_.scenes.empty();
@@ -449,7 +466,7 @@ void Engine::render(float* left, float* right, int numSamples) {
         const double localBar = bar - start;
 
         section_.store(index, std::memory_order_relaxed);
-        live = evaluate(song_, sec, localBar);
+        evaluateInto(song_, sec, localBar, live_);
 
         if (sec.scene >= 0 && sec.scene < int(song_.scenes.size())) {
             const Scene& scene = song_.scenes[size_t(sec.scene)];
@@ -463,7 +480,7 @@ void Engine::render(float* left, float* right, int numSamples) {
         section_.store(-1, std::memory_order_relaxed);
     }
 
-    const MasterFx& fxParams = live.master;
+    const MasterFx& fxParams = live_.master;
     // About 300 ms to fall by half: slow enough to read, fast enough to follow
     // a fader.
     const float meterDecay = float(std::exp(-1.0 / (0.3 * sampleRate_)));
@@ -568,7 +585,7 @@ void Engine::render(float* left, float* right, int numSamples) {
 
         for (size_t t = 0; t < trackCount; ++t) {
             // From the overlay, not the song: this is where automation lands.
-            const Mixer& m = live.mixers[t];
+            const Mixer& m = live_.mixers[t];
             const bool audible = !m.mute && (!anySolo || m.solo);
             if (!audible) continue;
 

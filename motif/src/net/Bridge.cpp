@@ -306,25 +306,35 @@ std::string Bridge::stateJson() const {
     return j.str();
 }
 
-void Bridge::commitTake() {
+FitOptions Bridge::fitOptionsNow(bool lockToSongTempo) const {
     FitOptions opts;
     { std::lock_guard<std::mutex> lock(takeMutex_); opts = fitOptions_; }
 
-    // Fit against the tempo already set, unless the session has not really
-    // started. Playing over a running loop means the loop is the reference; the
-    // performance should join it rather than redefine it.
+    // The context is rebuilt every time rather than remembered.
+    //
+    // Storing these back into fitOptions_ meant that recording once over a
+    // running loop locked the tempo into the saved options - and every take
+    // after that was fitted to a tempo the player had long since left, at a
+    // confidence that made it look as though the fitter had stopped working.
     const Song current = engine_.song();
-    const bool overExisting = engine_.playing();
-    if (overExisting) opts.lockedBpm = current.bpm;
+    opts.lockedBpm = lockToSongTempo ? current.bpm : 0.0;
     opts.bpmPrior = current.bpm;
     opts.beatsPerBar = current.beatsPerBar;
+    return opts;
+}
+
+void Bridge::commitTake() {
+    // Playing over a running loop means the loop is the reference: the
+    // performance should join it rather than redefine it. Starting from
+    // silence, the performance is the only reference there is.
+    const bool overExisting = engine_.playing();
+    const FitOptions opts = fitOptionsNow(overExisting);
 
     Take take = engine_.finishRecording(opts);
 
     {
         std::lock_guard<std::mutex> lock(takeMutex_);
         take_ = take;
-        fitOptions_ = opts;
         takeTrack_ = takePattern_ = -1;
         ++takeRev_;
     }
@@ -364,15 +374,18 @@ void Bridge::installTake(const Take& take, bool adoptTempo) {
 
 void Bridge::refitTake() {
     std::vector<RawNote> raw;
-    FitOptions opts;
     int track, pattern;
     {
         std::lock_guard<std::mutex> lock(takeMutex_);
         raw = take_.raw;
-        opts = fitOptions_;
         track = takeTrack_;
         pattern = takePattern_;
     }
+    // Re-fitting an installed take keeps it against the song's tempo: the
+    // pattern is already sitting in the arrangement at that tempo, and letting
+    // a strength drag re-infer a different one would move it out from under
+    // everything else.
+    const FitOptions opts = fitOptionsNow(track >= 0);
     if (raw.empty()) return;
 
     Take refitted = fitTake(raw, opts);
@@ -469,8 +482,18 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
         return true;
     }
 
-    if (type == "noteOn")    { engine_.noteOn(intField(body, "note", 60), float(numField(body, "velocity", 0.85))); return true; }
-    if (type == "noteOff")   { engine_.noteOff(intField(body, "note", 60)); return true; }
+    // "at" is when the key was actually pressed, on the interface's clock, in
+    // seconds. Without it a note is timestamped when its request happens to be
+    // processed, and the recorded rhythm becomes the rhythm of the queue.
+    if (type == "noteOn") {
+        engine_.noteOn(intField(body, "note", 60), float(numField(body, "velocity", 0.85)),
+                       numField(body, "at", -1.0));
+        return true;
+    }
+    if (type == "noteOff") {
+        engine_.noteOff(intField(body, "note", 60), numField(body, "at", -1.0));
+        return true;
+    }
     if (type == "audition")  { engine_.auditionTrack(track, intField(body, "note", 60), 0.95f); return true; }
 
     if (type == "bpm")   { engine_.editSong([&](Song& s) { s.bpm = std::clamp(value, 40.0, 240.0); }); return true; }
@@ -492,13 +515,15 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
         const Song s = engine_.song();
         const int note = theory::degreeToMidi(s.key, intField(body, "degree", 0),
                                               intField(body, "octave", 0));
-        engine_.noteOn(note, float(numField(body, "velocity", 0.85)));
+        engine_.noteOn(note, float(numField(body, "velocity", 0.85)),
+                       numField(body, "at", -1.0));
         return true;
     }
     if (type == "noteOffDegree") {
         const Song s = engine_.song();
         engine_.noteOff(theory::degreeToMidi(s.key, intField(body, "degree", 0),
-                                             intField(body, "octave", 0)));
+                                             intField(body, "octave", 0)),
+                        numField(body, "at", -1.0));
         return true;
     }
     if (type == "allNotesOff") { engine_.allNotesOff(); return true; }
@@ -823,6 +848,10 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
             if (index < 0 || index >= int(s.arrangement.size())) return;
             auto& lanes = s.arrangement[size_t(index)].lanes;
             if (lane < 0 || lane >= int(lanes.size())) return;
+            // A lane may only point at a track that exists. Without this an
+            // index from anywhere - a stale interface, a hand-written command -
+            // sits in the arrangement forever, silently automating nothing.
+            if (track < 0 || track >= int(s.tracks.size())) return;
             auto& tracks = lanes[size_t(lane)].tracks;
             const auto it = std::find(tracks.begin(), tracks.end(), track);
             if (on && it == tracks.end()) { tracks.push_back(track); std::sort(tracks.begin(), tracks.end()); }
@@ -847,6 +876,15 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
         std::string points;
         if (!field(body, "points", points)) { error = "missing points"; return false; }
 
+        // Read before parsing, so points can be clamped to the section they are
+        // being written into.
+        int sectionBars = 1;
+        {
+            const Song snapshot = engine_.song();
+            if (index >= 0 && index < int(snapshot.arrangement.size()))
+                sectionBars = std::max(1, snapshot.arrangement[size_t(index)].bars);
+        }
+
         // "bar:value,bar:value,..." - a shape is a lot of small numbers, and a
         // nested array would need a real parser on this side.
         std::vector<AutoPoint> parsed;
@@ -856,7 +894,11 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
             if (colon == std::string::npos) break;
             const size_t comma = points.find(',', colon);
             AutoPoint p;
-            p.bar = std::atof(points.substr(pos, colon - pos).c_str());
+            // Clamped to the section. A point before bar zero or past the end
+            // is unreachable, and one at a negative bar makes the curve
+            // non-monotonic in a way everything downstream assumes it is not.
+            p.bar = std::clamp(std::atof(points.substr(pos, colon - pos).c_str()),
+                               0.0, double(sectionBars));
             p.value = float(std::clamp(std::atof(
                 points.substr(colon + 1, comma == std::string::npos ? std::string::npos
                                                                    : comma - colon - 1).c_str()), 0.0, 1.0));
@@ -938,23 +980,15 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
             // Arm it: adding a track is how you say what you want to play next.
             for (auto& other : s.tracks) other.armed = false;
             t.armed = true;
-            s.tracks.push_back(std::move(t));
+            // Through the song's own edit, so scenes and automation are brought
+            // along rather than left pointing at whatever is now at that index.
+            motif::addTrack(s, std::move(t));
         });
         return true;
     }
 
     if (type == "removeTrack") {
-        engine_.editSong([&](Song& s) {
-            if (track < 0 || track >= int(s.tracks.size())) return;
-            // Never leave the song with nothing in it; there would be no way
-            // back to a playable state from the interface.
-            if (s.tracks.size() <= 1) return;
-            const bool wasArmed = s.tracks[size_t(track)].armed;
-            s.tracks.erase(s.tracks.begin() + track);
-            if (s.sidechainSource == track) s.sidechainSource = -1;
-            else if (s.sidechainSource > track) --s.sidechainSource;
-            if (wasArmed) s.tracks[size_t(std::min<size_t>(size_t(track), s.tracks.size() - 1))].armed = true;
-        });
+        engine_.editSong([&](Song& s) { motif::removeTrack(s, track); });
         return true;
     }
 
@@ -967,7 +1001,7 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
             copy.mixer.solo = false;
             for (auto& t : s.tracks) t.armed = false;
             copy.armed = true;
-            s.tracks.insert(s.tracks.begin() + track + 1, std::move(copy));
+            motif::addTrack(s, std::move(copy), track + 1);
         });
         return true;
     }
@@ -982,13 +1016,7 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
 
     if (type == "moveTrack") {
         const int to = intField(body, "to", -1);
-        engine_.editSong([&](Song& s) {
-            const int n = int(s.tracks.size());
-            if (track < 0 || track >= n || to < 0 || to >= n || to == track) return;
-            Track moved = std::move(s.tracks[size_t(track)]);
-            s.tracks.erase(s.tracks.begin() + track);
-            s.tracks.insert(s.tracks.begin() + to, std::move(moved));
-        });
+        engine_.editSong([&](Song& s) { motif::moveTrack(s, track, to); });
         return true;
     }
 

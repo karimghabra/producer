@@ -224,4 +224,107 @@ Song makeDefaultSong() {
     return song;
 }
 
+// ---------------------------------------------------------------------------
+// Track edits
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Remap every index that refers to a track, given where each one moved to. */
+void remapTrackReferences(Song& song, const std::vector<int>& newIndexOf) {
+    const int trackCount = int(song.tracks.size());
+
+    for (auto& scene : song.scenes) {
+        std::vector<int> rebuilt(size_t(trackCount), -1);
+        for (size_t old = 0; old < newIndexOf.size() && old < scene.patterns.size(); ++old) {
+            const int to = newIndexOf[old];
+            if (to >= 0 && to < trackCount) rebuilt[size_t(to)] = scene.patterns[old];
+        }
+        // A track that arrived after this scene was kept plays nothing in it,
+        // which is the honest answer: the scene never said anything about it.
+        scene.patterns = std::move(rebuilt);
+        for (size_t t = 0; t < scene.patterns.size(); ++t) {
+            const int limit = int(song.tracks[t].patterns.size());
+            if (scene.patterns[t] >= limit) scene.patterns[t] = limit ? limit - 1 : -1;
+        }
+    }
+
+    for (auto& section : song.arrangement) {
+        for (auto& lane : section.lanes) {
+            std::vector<int> rebuilt;
+            for (int old : lane.tracks) {
+                if (old < 0 || old >= int(newIndexOf.size())) continue;
+                const int to = newIndexOf[size_t(old)];
+                if (to >= 0 && to < trackCount) rebuilt.push_back(to);
+            }
+            std::sort(rebuilt.begin(), rebuilt.end());
+            rebuilt.erase(std::unique(rebuilt.begin(), rebuilt.end()), rebuilt.end());
+            lane.tracks = std::move(rebuilt);
+        }
+    }
+
+    if (song.sidechainSource >= 0 && song.sidechainSource < int(newIndexOf.size()))
+        song.sidechainSource = newIndexOf[size_t(song.sidechainSource)];
+    else if (song.sidechainSource >= int(newIndexOf.size()))
+        song.sidechainSource = -1;
+}
+
+} // namespace
+
+void addTrack(Song& song, Track track, int at) {
+    const int count = int(song.tracks.size());
+    const int where = (at < 0 || at > count) ? count : at;
+
+    // Fill value, not just a size: vector<int> v(size_t(n)) declares a
+    // function, and the errors it produces name everything but the cause.
+    std::vector<int> newIndexOf(size_t(count), -1);
+    for (int i = 0; i < count; ++i) newIndexOf[size_t(i)] = i < where ? i : i + 1;
+
+    song.tracks.insert(song.tracks.begin() + where, std::move(track));
+    remapTrackReferences(song, newIndexOf);
+}
+
+void removeTrack(Song& song, int index) {
+    const int count = int(song.tracks.size());
+    if (index < 0 || index >= count) return;
+    // The song must always have something in it; there is no way back to a
+    // playable state from an empty one.
+    if (count <= 1) return;
+
+    const bool wasArmed = song.tracks[size_t(index)].armed;
+    song.tracks.erase(song.tracks.begin() + index);
+
+    // Fill value, not just a size: vector<int> v(size_t(n)) declares a
+    // function, and the errors it produces name everything but the cause.
+    std::vector<int> newIndexOf(size_t(count), -1);
+    for (int i = 0; i < count; ++i)
+        newIndexOf[size_t(i)] = i == index ? -1 : (i < index ? i : i - 1);
+    remapTrackReferences(song, newIndexOf);
+
+    if (wasArmed) {
+        const size_t next = std::min(size_t(index), song.tracks.size() - 1);
+        for (auto& t : song.tracks) t.armed = false;
+        song.tracks[next].armed = true;
+    }
+}
+
+void moveTrack(Song& song, int from, int to) {
+    const int count = int(song.tracks.size());
+    if (from < 0 || from >= count || to < 0 || to >= count || from == to) return;
+
+    Track moved = std::move(song.tracks[size_t(from)]);
+    song.tracks.erase(song.tracks.begin() + from);
+    song.tracks.insert(song.tracks.begin() + to, std::move(moved));
+
+    // Fill value, not just a size: vector<int> v(size_t(n)) declares a
+    // function, and the errors it produces name everything but the cause.
+    std::vector<int> newIndexOf(size_t(count), -1);
+    for (int i = 0; i < count; ++i) {
+        if (i == from) newIndexOf[size_t(i)] = to;
+        else if (from < to) newIndexOf[size_t(i)] = (i > from && i <= to) ? i - 1 : i;
+        else               newIndexOf[size_t(i)] = (i >= to && i < from) ? i + 1 : i;
+    }
+    remapTrackReferences(song, newIndexOf);
+}
+
 } // namespace motif

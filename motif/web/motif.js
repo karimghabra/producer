@@ -1930,21 +1930,33 @@ const SCALE_NAMES = [
   'Blues', 'Whole Tone', 'Chromatic',
 ];
 
+/**
+ * When this key event happened, in seconds.
+ *
+ * Read here, at the moment of the press, and sent with the note. A request can
+ * queue behind others or be overtaken by a later one, and timestamping it on
+ * arrival made the recorded rhythm the rhythm of the network - which shows up
+ * as a take that fits badly precisely when the interface is busy.
+ */
+const now = () => performance.now() / 1000;
+
 function playKey(k) {
   const info = keyMap().get(k);
   if (!info || heldKeys.has(k)) return;
+  const at = now();
   heldKeys.add(k);
-  if (scaleLock) api.send('noteOnDegree', { degree: info.degree, octave, velocity: 0.85 });
-  else           api.send('noteOn', { note: 48 + 12 * octave + info.semi, velocity: 0.85 });
+  if (scaleLock) api.send('noteOnDegree', { degree: info.degree, octave, velocity: 0.85, at });
+  else           api.send('noteOn', { note: 48 + 12 * octave + info.semi, velocity: 0.85, at });
   renderKeys();
 }
 
 function releaseKey(k) {
   const info = keyMap().get(k);
   if (!info || !heldKeys.has(k)) return;
+  const at = now();
   heldKeys.delete(k);
-  if (scaleLock) api.send('noteOffDegree', { degree: info.degree, octave });
-  else           api.send('noteOff', { note: 48 + 12 * octave + info.semi });
+  if (scaleLock) api.send('noteOffDegree', { degree: info.degree, octave, at });
+  else           api.send('noteOff', { note: 48 + 12 * octave + info.semi, at });
   renderKeys();
 }
 
