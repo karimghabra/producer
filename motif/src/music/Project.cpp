@@ -176,13 +176,74 @@ Track trackFromJson(const json& j) {
     return t;
 }
 
+json sceneToJson(const Scene& s) {
+    return json{ { "name", s.name }, { "patterns", s.patterns } };
+}
+
+Scene sceneFromJson(const json& j) {
+    Scene s;
+    get(j, "name", s.name);
+    get(j, "patterns", s.patterns);
+    return s;
+}
+
+json sectionToJson(const Section& s) {
+    json lanes = json::array();
+    for (const auto& lane : s.lanes) {
+        json points = json::array();
+        for (const auto& p : lane.points) points.push_back(json{ { "bar", p.bar }, { "v", p.value } });
+        lanes.push_back(json{ { "tracks", lane.tracks }, { "param", lane.param },
+                              { "points", std::move(points) } });
+    }
+    return json{ { "scene", s.scene }, { "bars", s.bars }, { "lanes", std::move(lanes) } };
+}
+
+Section sectionFromJson(const json& j) {
+    Section s;
+    get(j, "scene", s.scene);
+    get(j, "bars", s.bars);
+    s.bars = std::clamp(s.bars, 1, 256);
+    if (auto l = j.find("lanes"); l != j.end() && l->is_array()) {
+        for (const auto& lj : *l) {
+            AutoLane lane;
+            get(lj, "tracks", lane.tracks);
+            get(lj, "param", lane.param);
+            // Files written before lanes could drive more than one track.
+            int legacy = -1;
+            get(lj, "track", legacy);
+            if (lane.tracks.empty() && legacy >= 0) lane.tracks.push_back(legacy);
+            if (auto p = lj.find("points"); p != lj.end() && p->is_array()) {
+                for (const auto& pj : *p) {
+                    AutoPoint pt;
+                    get(pj, "bar", pt.bar);
+                    get(pj, "v", pt.value);
+                    lane.points.push_back(pt);
+                }
+                // Kept in order, because everything that reads a lane assumes
+                // it. A file written by hand need not have bothered.
+                std::sort(lane.points.begin(), lane.points.end(),
+                          [](const AutoPoint& a, const AutoPoint& b) { return a.bar < b.bar; });
+            }
+            if (!lane.param.empty()) s.lanes.push_back(std::move(lane));
+        }
+    }
+    return s;
+}
+
 } // namespace
 
 std::string songToJson(const Song& song) {
     json tracks = json::array();
     for (const auto& t : song.tracks) tracks.push_back(trackToJson(t));
+    json scenes = json::array();
+    for (const auto& s : song.scenes) scenes.push_back(sceneToJson(s));
+    json arrangement = json::array();
+    for (const auto& s : song.arrangement) arrangement.push_back(sectionToJson(s));
 
     const json j{
+        { "scenes", std::move(scenes) },
+        { "arrangement", std::move(arrangement) },
+        { "songMode", song.songMode },
         { "format", "motif-project" },
         { "version", kFormatVersion },
         { "name", song.name },
@@ -270,6 +331,18 @@ bool songFromJson(const std::string& text, Song& out, std::string& error) {
     song.tracks.clear();
     for (const auto& tj : *tracks) song.tracks.push_back(trackFromJson(tj));
     if (song.tracks.empty()) { error = "the file carries no tracks"; return false; }
+
+    get(j, "songMode", song.songMode);
+    if (auto sc = j.find("scenes"); sc != j.end() && sc->is_array())
+        for (const auto& sj : *sc) song.scenes.push_back(sceneFromJson(sj));
+    if (auto ar = j.find("arrangement"); ar != j.end() && ar->is_array())
+        for (const auto& sj : *ar) song.arrangement.push_back(sectionFromJson(sj));
+
+    // A section pointing at a scene that is not there would silence everything
+    // for its whole length, with nothing on screen to explain why.
+    for (auto& sec : song.arrangement)
+        if (sec.scene < 0 || sec.scene >= int(song.scenes.size())) sec.scene = 0;
+    if (song.scenes.empty()) { song.arrangement.clear(); song.songMode = false; }
 
     // Exactly one armed track, whatever the file says.
     int armed = -1;

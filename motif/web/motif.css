@@ -284,6 +284,58 @@ section { padding:14px; overflow:auto; min-width:0; }
 .step .mk.n { bottom:2px; right:4px; font-size:11px; }
 .step .mk.c { bottom:2px; left:4px; }
 
+/* ---------- song ---------- */
+#view-song.on { display:grid; grid-template-rows:auto auto 1fr; height:100%; min-height:0; }
+.chip-sub { color:var(--dimmer); font-size:9px; margin-left:2px; }
+
+.song-lane { position:relative; margin-bottom:14px; }
+.sections { display:flex; gap:4px; align-items:stretch; min-height:78px; }
+.section { flex:1 1 0; min-width:54px; position:relative; padding:9px 10px 8px;
+           border-radius:9px; background:rgba(22,28,41,.6); border:1px solid var(--line);
+           cursor:pointer; overflow:hidden; transition:.1s; }
+.section:hover { border-color:#33405a; }
+.section.sel { border-color:var(--text); background:rgba(38,47,66,.7); }
+.section.live { box-shadow:inset 0 0 0 1px var(--gold), 0 0 20px -8px var(--gold); }
+.sec-name { font-weight:700; font-size:11.5px; white-space:nowrap; overflow:hidden;
+            text-overflow:ellipsis; }
+.sec-bars { font:9px var(--mono); color:var(--dimmer); margin-top:1px; }
+.sec-at { position:absolute; top:7px; right:9px; font:600 9px var(--mono); color:#39415a; }
+.sec-lanes { position:absolute; left:10px; right:10px; bottom:7px; display:flex; gap:2px; }
+.sec-lanes i { flex:1; height:3px; border-radius:2px; opacity:.85; }
+.section-add { flex:0 0 40px; border-radius:9px; border:1px dashed #2b3549;
+               color:var(--dimmer); font-size:17px; }
+.section-add:hover { border-color:var(--fitted); color:var(--fitted); border-style:solid; }
+.song-head { position:absolute; top:0; bottom:22px; width:2px; background:var(--gold);
+             box-shadow:0 0 10px var(--gold); pointer-events:none; }
+.song-ruler { margin-top:6px; font:9.5px var(--mono); color:var(--dimmer); text-align:right; }
+.song-empty { padding:26px 20px; text-align:center; font-size:11.5px; line-height:1.7;
+              color:var(--dimmer); border:1px dashed #232b3d; border-radius:10px; }
+.song-empty b { color:var(--dim); }
+
+.section-detail { min-height:0; overflow-y:auto; padding-right:2px; }
+.sec-select { padding:5px 8px; border-radius:6px; background:var(--ink0);
+              border:1px solid var(--line); color:var(--text); font:11px var(--sans);
+              outline:none; }
+.chip.tiny.danger { color:var(--hot); }
+.chip.tiny:disabled { opacity:.35; cursor:default; }
+
+.lane { margin-bottom:9px; padding:8px 10px 9px; border-radius:9px;
+        background:rgba(7,9,16,.5); border:1px solid var(--line-soft); }
+.lane-head { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
+.lane-name { font:700 10px var(--sans); letter-spacing:.05em; }
+.lane-read { font:9.5px var(--mono); color:var(--dimmer); margin-left:auto; min-width:150px;
+             text-align:right; }
+.lane-canvas { display:block; width:100%; height:74px; border-radius:6px; cursor:crosshair; }
+.lane-tracks { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin-bottom:6px; }
+.lane-tracks-label { font:700 8px var(--sans); letter-spacing:.14em; color:var(--dimmer);
+                     margin-right:2px; }
+.track-pick { padding:3px 8px; border-radius:5px; font:600 9.5px var(--sans);
+              background:var(--ink0); border:1px solid var(--line); color:var(--dimmer); }
+.track-pick:hover { border-color:var(--c); color:var(--dim); }
+.track-pick.on { background:color-mix(in srgb, var(--c) 20%, transparent);
+                 border-color:var(--c); color:var(--text); }
+.lane-warn { font:9.5px var(--mono); color:var(--gold); margin-left:4px; }
+
 /* ---------- take ---------- */
 /* Sits at the bottom of the stage like a hardware panel, so the space between
    it and the step grid reads as deliberate rather than as a gap. */

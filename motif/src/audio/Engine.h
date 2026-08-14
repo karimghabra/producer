@@ -20,6 +20,7 @@
 #include "audio/Drums.h"
 #include "audio/Fx.h"
 #include "dsp/Dsp.h"
+#include "music/Automation.h"
 #include "music/Quantizer.h"
 #include "music/Song.h"
 
@@ -107,6 +108,14 @@ public:
     /** Which step of its own pattern each track is on, for the UI. */
     int trackStep(int trackIndex) const;
 
+    // --- arrangement --------------------------------------------------------
+    /** Position within the arrangement, in bars. Meaningless outside song mode. */
+    double songBar() const { return songBar_.load(std::memory_order_relaxed); }
+    /** Which section is playing, or -1. */
+    int currentSection() const { return section_.load(std::memory_order_relaxed); }
+    /** Start the arrangement again from the top. */
+    void rewindSong();
+
     float outputPeak() const { return peak_.load(std::memory_order_relaxed); }
     /** Post-fader level of one track, 0..1, for its meter. */
     float trackPeak(int trackIndex) const;
@@ -169,6 +178,13 @@ private:
 
     std::atomic<bool> playing_{ false };
     std::atomic<bool> recording_{ false };
+
+    // Arrangement playback. songBar_ is the position; section_ is which stretch
+    // that lands in, published so the interface can follow it.
+    std::atomic<double> songBar_{ 0.0 };
+    std::atomic<int> section_{ -1 };
+    /** Pattern chosen by the current scene, per track. -1 means "as the song says". */
+    std::array<int, kMaxTracks> scenePattern_{};
     std::atomic<double> positionBeats_{ 0.0 };
     std::atomic<float> peak_{ 0.0f };
     std::atomic<float> reduction_{ 0.0f };

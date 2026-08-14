@@ -92,6 +92,7 @@ target_sources(Motif PRIVATE
     src/music/Presets.cpp
     src/music/Params.cpp
     src/music/Project.cpp
+    src/music/Automation.cpp
     src/net/Bridge.cpp
 )
 
@@ -148,6 +149,7 @@ add_executable(MotifTests
     src/music/Presets.cpp
     src/music/Params.cpp
     src/music/Project.cpp
+    src/music/Automation.cpp
     src/audio/Drums.cpp
     src/audio/Engine.cpp
 )

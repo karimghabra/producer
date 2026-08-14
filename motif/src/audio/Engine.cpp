@@ -289,6 +289,11 @@ int Engine::trackStep(int trackIndex) const {
     return stepDisplay_[size_t(trackIndex)].load(std::memory_order_relaxed);
 }
 
+void Engine::rewindSong() {
+    songBar_.store(0.0, std::memory_order_relaxed);
+    section_.store(-1, std::memory_order_relaxed);
+}
+
 float Engine::trackPeak(int trackIndex) const {
     if (trackIndex < 0 || trackIndex >= kMaxTracks) return 0.0f;
     return trackPeaks_[size_t(trackIndex)].load(std::memory_order_relaxed);
@@ -411,7 +416,54 @@ void Engine::render(float* left, float* right, int numSamples) {
     const bool isPlaying = playing_.load(std::memory_order_relaxed);
     const bool anySolo = song_.anySolo();
     beatsPerSample_ = song_.bpm / 60.0 / sampleRate_;
-    const MasterFx& fxParams = song_.master;
+
+    // --- the arrangement ----------------------------------------------------
+    //
+    // Resolved once per block. A block is a few milliseconds, which is finer
+    // than any sweep you can hear stepping, and evaluating per sample would be
+    // a lot of work to make a filter cutoff move imperceptibly more smoothly.
+    //
+    // The result is an overlay, not a write. Playing a section that opens a
+    // filter must not leave the filter open when the transport stops - the
+    // song says what the mix is, automation says what it is doing right now.
+    AutomationState live = passthrough(song_);
+    scenePattern_.fill(-1);
+
+    const bool inSong = song_.songMode && !song_.arrangement.empty() && !song_.scenes.empty();
+    if (inSong) {
+        const double beatsPerBar = std::max(1, song_.beatsPerBar);
+        double bar = songBar_.load(std::memory_order_relaxed);
+        const int totalBars = song_.songBars();
+        if (totalBars > 0) bar = std::fmod(bar, double(totalBars));
+
+        // Which section that lands in, and how far into it.
+        int index = 0;
+        double start = 0.0;
+        for (size_t i = 0; i < song_.arrangement.size(); ++i) {
+            const double len = std::max(1, song_.arrangement[i].bars);
+            if (bar < start + len) { index = int(i); break; }
+            start += len;
+            index = int(i);
+        }
+        const Section& sec = song_.arrangement[size_t(index)];
+        const double localBar = bar - start;
+
+        section_.store(index, std::memory_order_relaxed);
+        live = evaluate(song_, sec, localBar);
+
+        if (sec.scene >= 0 && sec.scene < int(song_.scenes.size())) {
+            const Scene& scene = song_.scenes[size_t(sec.scene)];
+            for (size_t t = 0; t < trackCount; ++t) scenePattern_[t] = scene.patternFor(t);
+        }
+        if (isPlaying) {
+            songBar_.store(bar + double(numSamples) * beatsPerSample_ / beatsPerBar,
+                           std::memory_order_relaxed);
+        }
+    } else {
+        section_.store(-1, std::memory_order_relaxed);
+    }
+
+    const MasterFx& fxParams = live.master;
     // About 300 ms to fall by half: slow enough to read, fast enough to follow
     // a fader.
     const float meterDecay = float(std::exp(-1.0 / (0.3 * sampleRate_)));
@@ -433,7 +485,18 @@ void Engine::render(float* left, float* right, int numSamples) {
             for (size_t t = 0; t < trackCount; ++t) {
                 const Track& track = song_.tracks[t];
                 if (!track.seqEnabled) continue;
+
+                // In song mode the scene chooses the pattern, and -1 means this
+                // track sits the section out. Outside song mode the track's own
+                // selection stands.
                 const Pattern* pattern = track.current();
+                if (scenePattern_[t] >= 0) {
+                    const int wanted = scenePattern_[t];
+                    pattern = wanted < int(track.patterns.size())
+                        ? &track.patterns[size_t(wanted)] : nullptr;
+                } else if (inSong) {
+                    pattern = nullptr;               // scene says: silent here
+                }
                 if (!pattern || pattern->steps.empty()) continue;
 
                 auto& rt = runtime_[t];
@@ -504,7 +567,8 @@ void Engine::render(float* left, float* right, int numSamples) {
         float sendDelayL = 0.0f, sendDelayR = 0.0f;
 
         for (size_t t = 0; t < trackCount; ++t) {
-            const Mixer& m = song_.tracks[t].mixer;
+            // From the overlay, not the song: this is where automation lands.
+            const Mixer& m = live.mixers[t];
             const bool audible = !m.mute && (!anySolo || m.solo);
             if (!audible) continue;
 

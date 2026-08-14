@@ -1034,6 +1034,528 @@ function attachPitchDrag(el, trackIndex, step, s) {
   });
 }
 
+// --------------------------------------------------------------------------
+// Song — scenes, sections, and what moves across them
+//
+// A scene is a loop you liked: which pattern each track was playing when you
+// kept it. A section is that scene held for a number of bars. Lanes are drawn
+// per section, because "the filter opens over these two bars" is a statement
+// about a place in the song rather than a property of the instrument.
+// --------------------------------------------------------------------------
+
+let autoTargets = [];
+let selectedSection = 0;
+
+async function loadAutoTargets() {
+  if (autoTargets.length) return;
+  autoTargets = await (await fetch('/api/automation')).json();
+}
+
+const targetById = (id) => autoTargets.find((t) => t.id === id);
+
+function laneLabel(lane) {
+  const t = targetById(lane.param);
+  if (!t) return lane.param;
+  if (t.master) return t.label;
+  const names = lane.tracks.map((i) => state.tracks[i]?.name).filter(Boolean);
+  if (!names.length) return `${t.label} — no tracks`;
+  if (names.length > 2) return `${t.label} — ${names.length} tracks`;
+  return `${t.label} — ${names.join(' + ')}`;
+}
+
+function laneTint(lane) {
+  const t = targetById(lane.param);
+  if (t?.master) return '#ffd479';
+  // The first track's colour when it drives one; a neutral tint when several,
+  // because borrowing one track's colour for a curve driving four is a lie.
+  if (lane.tracks.length === 1) return hex(state.tracks[lane.tracks[0]]?.colour ?? 0x5ee6c5);
+  return '#5ee6c5';
+}
+
+function renderSong() {
+  loadAutoTargets();
+  renderSceneBar();
+  renderArrangement();
+  renderSectionDetail();
+}
+
+/** The loops you have kept, and the button that keeps another. */
+function renderSceneBar() {
+  const host = $('#scene-bar');
+  host.innerHTML = '';
+
+  const label = document.createElement('span');
+  label.className = 'bar-label';
+  label.textContent = 'SCENES';
+  host.append(label);
+
+  state.scenes.forEach((sc, i) => {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    const playing = sc.patterns.filter((p) => p >= 0).length;
+    b.innerHTML = `${esc(sc.name)} <span class="chip-sub">${playing}</span>`;
+    b.title = `Load this scene onto the tracks so you can edit it.\n`
+      + `Right-click to update it from what is playing now.\n\n`
+      + state.tracks.map((t, ti) => `${t.name}: ${sc.patterns[ti] >= 0
+          ? (t.patterns[sc.patterns[ti]]?.name ?? '?') : 'silent'}`).join('\n');
+    b.onclick = () => api.send('recallScene', { scene: i });
+    b.oncontextmenu = (e) => { e.preventDefault(); api.send('updateScene', { scene: i }); };
+    host.append(b);
+  });
+
+  const keep = document.createElement('button');
+  keep.className = 'chip ghost';
+  keep.textContent = state.scenes.length ? '+ KEEP THIS LOOP' : '+ KEEP THIS LOOP AS A SCENE';
+  keep.title = 'Save what is playing right now as a scene: which pattern each '
+    + 'track is on, and which tracks are silent. Get the loop right first, then keep it.';
+  keep.onclick = () => api.send('addScene');
+  host.append(keep);
+
+  if (state.scenes.length) {
+    const mode = document.createElement('button');
+    mode.className = 'chip' + (state.songMode ? ' on' : '');
+    mode.textContent = state.songMode ? 'SONG MODE' : 'LOOP MODE';
+    mode.title = state.songMode
+      ? 'Playing the arrangement. Click to go back to looping one scene.'
+      : 'Looping whatever is armed. Click to play the arrangement instead.';
+    mode.onclick = () => api.send('songMode', { value: state.songMode ? 0 : 1 });
+    host.append(mode);
+  }
+}
+
+/** Sections laid end to end, to scale, with the playhead running through. */
+function renderArrangement() {
+  const host = $('#song-lane');
+  host.innerHTML = '';
+
+  if (!state.scenes.length) {
+    host.innerHTML = '<div class="song-empty">Get a loop sounding the way you want it, '
+      + 'then <b>keep it as a scene</b>. Place scenes one after another here to build '
+      + 'the track, and draw what moves across each one.</div>';
+    return;
+  }
+
+  const total = Math.max(state.songBars, 1);
+  const strip = document.createElement('div');
+  strip.className = 'sections';
+
+  let barCursor = 0;
+  state.arrangement.forEach((sec, i) => {
+    const start = barCursor;
+    barCursor += sec.bars;
+    const scene = state.scenes[sec.scene];
+
+    const el = document.createElement('div');
+    el.className = 'section' + (i === selectedSection ? ' sel' : '')
+                 + (state.section === i && state.playing && state.songMode ? ' live' : '');
+    // Width in proportion to length, so eight bars looks like twice four.
+    el.style.flexGrow = String(sec.bars);
+    el.innerHTML =
+      `<div class="sec-name">${esc(scene?.name ?? '?')}</div>
+       <div class="sec-bars">${sec.bars} ${sec.bars === 1 ? 'bar' : 'bars'}</div>
+       <div class="sec-at">${start + 1}</div>`;
+
+    if (sec.lanes.length) {
+      const marks = document.createElement('div');
+      marks.className = 'sec-lanes';
+      for (const lane of sec.lanes) {
+        const m = document.createElement('i');
+        m.style.background = laneTint(lane);
+        m.title = laneLabel(lane);
+        marks.append(m);
+      }
+      el.append(marks);
+    }
+    el.onclick = () => { selectedSection = i; lastShape = null; render(); };
+    strip.append(el);
+  });
+
+  const add = document.createElement('button');
+  add.className = 'section-add';
+  add.textContent = '+';
+  add.title = 'Place another section at the end';
+  add.onclick = () => api.send('addSection', {
+    scene: state.arrangement.at(-1)?.scene ?? 0, bars: 4,
+  });
+  strip.append(add);
+  host.append(strip);
+
+  // Playhead across the whole arrangement.
+  if (state.songMode && state.playing && total > 0) {
+    const head = document.createElement('div');
+    head.className = 'song-head';
+    head.style.left = ((state.songBar % total) / total * 100) + '%';
+    host.append(head);
+  }
+
+  const ruler = document.createElement('div');
+  ruler.className = 'song-ruler';
+  ruler.textContent = `${total} bars`
+    + (state.bpm ? `  ·  ${fmtTime(total * state.beatsPerBar * 60 / state.bpm)}` : '');
+  host.append(ruler);
+}
+
+const fmtTime = (sec) =>
+  `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
+
+function renderSectionDetail() {
+  const host = $('#section-detail');
+  host.innerHTML = '';
+  const sec = state.arrangement[selectedSection];
+  if (!sec) return;
+
+  const head = document.createElement('div');
+  head.className = 'sd-head';
+  head.innerHTML = `<span class="sd-title">SECTION ${selectedSection + 1}</span>`;
+
+  const scenePick = document.createElement('select');
+  scenePick.className = 'sec-select';
+  scenePick.title = 'Which loop plays here';
+  state.scenes.forEach((sc, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = sc.name;
+    o.selected = i === sec.scene;
+    scenePick.append(o);
+  });
+  scenePick.onchange = () =>
+    api.send('sectionScene', { section: selectedSection, value: Number(scenePick.value) });
+  head.append(scenePick);
+
+  const bars = document.createElement('div');
+  bars.className = 'stepper';
+  bars.innerHTML = '<label>BARS</label>';
+  const dec = document.createElement('button'); dec.textContent = '-';
+  const out = document.createElement('span'); out.textContent = String(sec.bars);
+  const inc = document.createElement('button'); inc.textContent = '+';
+  dec.onclick = () => api.send('sectionBars', { section: selectedSection, value: sec.bars - 1 });
+  inc.onclick = () => api.send('sectionBars', { section: selectedSection, value: sec.bars + 1 });
+  bars.append(dec, out, inc);
+  head.append(bars);
+
+  for (const [label, fn, on] of [
+    ['Move left', () => api.send('moveSection', { section: selectedSection, to: selectedSection - 1 }), selectedSection > 0],
+    ['Move right', () => api.send('moveSection', { section: selectedSection, to: selectedSection + 1 }), selectedSection < state.arrangement.length - 1],
+    ['Duplicate', () => api.send('addSection', { scene: sec.scene, bars: sec.bars, at: selectedSection + 1 }), true],
+    ['Remove', () => { api.send('removeSection', { section: selectedSection }); selectedSection = Math.max(0, selectedSection - 1); }, true],
+  ]) {
+    const b = document.createElement('button');
+    b.className = 'chip tiny' + (label === 'Remove' ? ' danger' : '');
+    b.textContent = label;
+    b.disabled = !on;
+    b.onclick = fn;
+    head.append(b);
+  }
+  host.append(head);
+
+  // --- lanes ---------------------------------------------------------------
+  sec.lanes.forEach((lane, li) => host.append(laneEditor(sec, lane, li)));
+
+  const addLane = document.createElement('button');
+  addLane.className = 'chip ghost';
+  addLane.textContent = '+ AUTOMATE SOMETHING';
+  addLane.onclick = (e) => openLaneMenu(e.currentTarget);
+  host.append(addLane);
+}
+
+/**
+ * One lane, drawn and drawable.
+ *
+ * Dragging across it writes the curve under the pointer, which is what "draw a
+ * ramp" should mean - not placing points one at a time and hoping the line
+ * between them is what you wanted.
+ */
+function laneEditor(sec, lane, laneIndex) {
+  const wrap = document.createElement('div');
+  wrap.className = 'lane';
+  const target = targetById(lane.param);
+  const tint = laneTint(lane);
+
+  const head = document.createElement('div');
+  head.className = 'lane-head';
+  head.innerHTML = `<span class="lane-name" style="color:${tint}">${esc(laneLabel(lane))}</span>`;
+  if (target?.help) head.title = target.help;
+
+  const readout = document.createElement('span');
+  readout.className = 'lane-read';
+  head.append(readout);
+
+  // Shapes over a span, not over the section. The span is whatever the lane
+  // already covers, so pressing "Ramp up" on a curve you drew over half a bar
+  // gives you a ramp over that half bar rather than stretching it to fill.
+  const from = lane.points.length ? lane.points[0].bar : 0;
+  const to = lane.points.length ? lane.points.at(-1).bar : sec.bars;
+  const span = Math.max(to - from, sec.bars / 32);
+  const shape = (pts) => sendCurve(laneIndex,
+    pts.map(([x, y]) => `${Math.max(0, Math.min(sec.bars, x)).toFixed(3)}:${y}`).join(','));
+
+  for (const [label, points] of [
+    ['Ramp up', [[from, 0], [from + span, 1]]],
+    ['Ramp down', [[from, 1], [from + span, 0]]],
+    ['Up then down', [[from, 0], [from + span / 2, 1], [from + span, 0]]],
+    ['Flat', [[from, 0.5], [from + span, 0.5]]],
+    ['Fill section', [[0, 0], [sec.bars, 1]]],
+  ]) {
+    const b = document.createElement('button');
+    b.className = 'chip tiny';
+    b.textContent = label;
+    const trim = (n) => n.toFixed(2).replace(/\.?0+$/, '');
+    b.title = label === 'Fill section'
+      ? 'Stretch a ramp across the whole section'
+      : `Shape it over bars ${trim(from + 1)}–${trim(from + span + 1)}, `
+        + 'then drag on it to adjust. Drag anywhere to draw a new span.';
+    b.onclick = () => shape(points);
+    head.append(b);
+  }
+  const del = document.createElement('button');
+  del.className = 'chip tiny danger';
+  del.textContent = '×';
+  del.title = 'Remove this lane';
+  del.onclick = () => api.send('removeLane', { section: selectedSection, lane: laneIndex });
+  head.append(del);
+  wrap.append(head);
+
+  // Which tracks this curve drives. One gesture, as many tracks as you want it
+  // to move - "open the filter on the drums" is one shape over three tracks,
+  // not three shapes to keep in agreement afterwards.
+  if (!target?.master) {
+    const picks = document.createElement('div');
+    picks.className = 'lane-tracks';
+    picks.innerHTML = '<span class="lane-tracks-label">ON</span>';
+    state.tracks.forEach((t, ti) => {
+      const on = lane.tracks.includes(ti);
+      const b = document.createElement('button');
+      b.className = 'track-pick' + (on ? ' on' : '');
+      b.style.setProperty('--c', hex(t.colour));
+      b.textContent = t.name;
+      b.title = on ? `${t.name} follows this curve` : `Add ${t.name} to this curve`;
+      b.onclick = () => api.send('laneTrack', {
+        section: selectedSection, lane: laneIndex, laneTrack: ti, value: on ? 0 : 1,
+      });
+      picks.append(b);
+    });
+    if (!lane.tracks.length) {
+      const warn = document.createElement('span');
+      warn.className = 'lane-warn';
+      warn.textContent = 'no tracks selected - this curve does nothing yet';
+      picks.append(warn);
+    }
+    wrap.append(picks);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.className = 'lane-canvas';
+  wrap.append(canvas);
+
+  // Drawn after layout, so the canvas has a size to be drawn into.
+  requestAnimationFrame(() => drawLane(canvas, sec, lane, tint));
+
+  const sendCurve = (li, points) =>
+    api.send('laneCurve', { section: selectedSection, lane: li, points });
+
+  // --- drawing -------------------------------------------------------------
+  let drawing = null;
+  const valueAt = (ev) => {
+    const box = canvas.getBoundingClientRect();
+    const bar = Math.max(0, Math.min(sec.bars, (ev.clientX - box.left) / box.width * sec.bars));
+    const v = Math.max(0, Math.min(1, 1 - (ev.clientY - box.top) / box.height));
+    return { bar, v };
+  };
+  canvas.addEventListener('pointerdown', (ev) => {
+    canvas.setPointerCapture(ev.pointerId);
+    interacting = true;
+    drawing = [valueAt(ev)];
+    drawPreview(canvas, sec, lane, tint, drawing);
+  });
+  canvas.addEventListener('pointermove', (ev) => {
+    const p = valueAt(ev);
+    // Say what the value under the pointer actually is, in the units of the
+    // thing being automated. A normalised height is not a cutoff.
+    if (target) {
+      const real = target.log && target.min > 0
+        ? target.min * Math.pow(target.max / target.min, p.v)
+        : target.min + p.v * (target.max - target.min);
+      readout.textContent = `bar ${(p.bar + 1).toFixed(1)}  ·  ${formatTarget(target, real)}`;
+    }
+    if (!drawing) return;
+    // One point per horizontal step, so a slow drag does not write hundreds.
+    // The step is a fraction of the section rather than a bar, so a ramp can
+    // be a quarter of a bar long if that is what you drew.
+    const last = drawing[drawing.length - 1];
+    if (Math.abs(p.bar - last.bar) < sec.bars / 96) { last.v = p.v; }
+    else drawing.push(p);
+    drawPreview(canvas, sec, lane, tint, drawing);
+  });
+  const finish = (ev) => {
+    if (!drawing) return;
+    canvas.releasePointerCapture(ev.pointerId);
+    interacting = false;
+    const pts = [...drawing].sort((a, b) => a.bar - b.bar);
+    // Stored exactly as drawn. The curve is not stretched to the section: a
+    // ramp over bars 2 to 4 occupies bars 2 to 4, holds its first value before
+    // and its last after, and the rest of the section is left alone.
+    sendCurve(laneIndex, pts.map((p) => `${p.bar.toFixed(3)}:${p.v.toFixed(4)}`).join(','));
+    drawing = null;
+  };
+  canvas.addEventListener('pointerup', finish);
+  canvas.addEventListener('pointercancel', finish);
+
+  return wrap;
+}
+
+function laneGeometry(canvas) {
+  const box = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  if (box.width < 4 || box.height < 4) return null;
+  canvas.width = box.width * dpr;
+  canvas.height = box.height * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { g, W: box.width, H: box.height };
+}
+
+function drawLaneBase(geo, sec) {
+  const { g, W, H } = geo;
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = 'rgba(0,0,0,.25)';
+  g.fillRect(0, 0, W, H);
+  // A line per bar, so a shape can be aimed at a bar rather than at a pixel.
+  for (let b = 0; b <= sec.bars; b++) {
+    g.strokeStyle = b % 4 === 0 ? '#33405a' : '#1d2434';
+    g.beginPath();
+    g.moveTo(Math.round(b / sec.bars * W) + 0.5, 0);
+    g.lineTo(Math.round(b / sec.bars * W) + 0.5, H);
+    g.stroke();
+  }
+  g.strokeStyle = '#171e2c';
+  for (const f of [0.25, 0.5, 0.75]) {
+    g.beginPath();
+    g.moveTo(0, Math.round(H * f) + 0.5);
+    g.lineTo(W, Math.round(H * f) + 0.5);
+    g.stroke();
+  }
+}
+
+function strokeCurve(geo, sec, points, tint) {
+  const { g, W, H } = geo;
+  if (!points.length) return;
+  const x = (bar) => bar / Math.max(sec.bars, 0.001) * W;
+  const y = (v) => H - v * H;
+
+  g.beginPath();
+  g.moveTo(x(points[0].bar), y(points[0].value ?? points[0].v));
+  for (const p of points) g.lineTo(x(p.bar), y(p.value ?? p.v));
+  g.lineTo(W, y(points.at(-1).value ?? points.at(-1).v));
+  g.strokeStyle = tint;
+  g.lineWidth = 2;
+  g.lineJoin = 'round';
+  g.stroke();
+
+  g.lineTo(W, H);
+  g.lineTo(0, H);
+  g.closePath();
+  g.fillStyle = tint + '22';
+  g.fill();
+
+  g.fillStyle = tint;
+  for (const p of points) {
+    g.beginPath();
+    g.arc(x(p.bar), y(p.value ?? p.v), 2.6, 0, Math.PI * 2);
+    g.fill();
+  }
+}
+
+function drawLane(canvas, sec, lane, tint) {
+  const geo = laneGeometry(canvas);
+  if (!geo) return;
+  drawLaneBase(geo, sec);
+  strokeCurve(geo, sec, lane.points, tint);
+
+  // Where the transport is inside this section, if it is in it.
+  if (state.songMode && state.playing && state.section === selectedSection) {
+    let start = 0;
+    for (let i = 0; i < selectedSection; i++) start += state.arrangement[i].bars;
+    const local = (state.songBar % Math.max(state.songBars, 1)) - start;
+    if (local >= 0 && local <= sec.bars) {
+      const px = local / sec.bars * geo.W;
+      geo.g.strokeStyle = '#ffd479';
+      geo.g.lineWidth = 1.5;
+      geo.g.beginPath();
+      geo.g.moveTo(px, 0);
+      geo.g.lineTo(px, geo.H);
+      geo.g.stroke();
+    }
+  }
+}
+
+function drawPreview(canvas, sec, lane, tint, points) {
+  const geo = laneGeometry(canvas);
+  if (!geo) return;
+  drawLaneBase(geo, sec);
+  strokeCurve(geo, sec, points, tint);
+}
+
+/**
+ * What can be automated.
+ *
+ * Parameters only. Which tracks a curve drives is chosen on the lane itself,
+ * so this does not multiply out to every parameter on every track - which it
+ * used to, and which made the menu taller than the window.
+ */
+function openLaneMenu(anchor) {
+  closeMenu();
+  const sec = state.arrangement[selectedSection];
+  const taken = new Set((sec?.lanes ?? []).map((l) => l.param));
+
+  const menu = document.createElement('div');
+  menu.className = 'menu wide';
+  menu.id = 'track-menu';
+
+  const group = (title, targets, laneTrack) => {
+    if (!targets.length) return;
+    const head = document.createElement('div');
+    head.className = 'menu-head';
+    head.textContent = title;
+    menu.append(head);
+    const row = document.createElement('div');
+    row.className = 'choice-row pad';
+    for (const t of targets) {
+      const b = document.createElement('button');
+      b.className = 'chip tiny';
+      b.textContent = t.label.replace(/^(Filter|Master) /, '');
+      b.title = t.help + (taken.has(t.id) ? '\n\nAlready on this section.' : '');
+      b.disabled = taken.has(t.id);
+      b.onclick = () => {
+        api.send('addLane', { section: selectedSection, laneTrack, param: t.id });
+        closeMenu();
+      };
+      row.append(b);
+    }
+    menu.append(row);
+  };
+
+  // Seeded with the armed track, so a lane arrives already doing something.
+  group('PER TRACK', autoTargets.filter((t) => !t.master), selected);
+  group('MASTER', autoTargets.filter((t) => t.master), -1);
+
+  const foot = document.createElement('div');
+  foot.className = 'menu-foot';
+  foot.textContent = 'A per-track curve starts on the armed track. Add more tracks '
+    + 'to it from the lane, and they all follow the same shape.';
+  menu.append(foot);
+
+  document.body.append(menu);
+  const box = anchor.getBoundingClientRect();
+  menu.style.left = Math.min(box.left, innerWidth - menu.offsetWidth - 8) + 'px';
+  menu.style.top = Math.max(8, Math.min(innerHeight - menu.offsetHeight - 8,
+    innerHeight - box.bottom > menu.offsetHeight + 8 ? box.bottom + 4
+                                                     : box.top - menu.offsetHeight - 4)) + 'px';
+  setTimeout(() => addEventListener('pointerdown', dismissMenu), 0);
+}
+
+const formatTarget = (t, v) =>
+  Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + 'k' + t.unit : v.toFixed(2) + t.unit;
+
 function renderMix() {
   const host = $('#mixer');
   host.innerHTML = '';
@@ -1606,6 +2128,10 @@ function shapeKey() {
     // The master panel is drawn from these, and the delay time and limiter are
     // buttons whose selected state is structural.
     `${state.master.limiter}|${state.master.delay.beats}|${state.swingUnit}`,
+    // The whole arrangement: a section's length changes the layout, and a lane's
+    // curve changes what is drawn on it.
+    selectedSection, state.songMode, state.section,
+    JSON.stringify(state.scenes), JSON.stringify(state.arrangement),
     state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.length,
     state.tracks.map((t) => (t.mixer.mute ? 'm' : '') + (t.mixer.solo ? 's' : '')).join(''),
     selectedStep,
@@ -1640,6 +2166,23 @@ function refreshLive() {
   document.querySelectorAll('#mixer .strip-meter i').forEach((el, ti) => {
     if (state.tracks[ti]) el.style.width = meterWidth(state.tracks[ti]);
   });
+
+  if (view === 'song') {
+    // The playhead moves every frame; the arrangement around it does not.
+    const total = Math.max(state.songBars, 1);
+    const head = document.querySelector('.song-head');
+    if (head) head.style.left = ((state.songBar % total) / total * 100) + '%';
+    document.querySelectorAll('#song-lane .section').forEach((el, i) =>
+      el.classList.toggle('live', state.songMode && state.playing && state.section === i));
+    if (!interacting) {
+      const sec = state.arrangement[selectedSection];
+      document.querySelectorAll('.lane').forEach((wrap, li) => {
+        const canvas = wrap.querySelector('.lane-canvas');
+        const lane = sec?.lanes[li];
+        if (canvas && lane) drawLane(canvas, sec, lane, laneTint(lane));
+      });
+    }
+  }
 
   if (view === 'grid') {
     // Every track has its own playhead: with different pattern lengths they
@@ -1695,6 +2238,7 @@ function render() {
   if (view === 'grid') renderGrid();
   else if (view === 'steps') renderSteps();
   else if (view === 'mix') renderMix();
+  else if (view === 'song') renderSong();
   else renderSound();
   renderKeys();
   refreshLive();

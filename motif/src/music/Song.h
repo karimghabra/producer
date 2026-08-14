@@ -203,6 +203,90 @@ struct MasterFx {
     float sidechainCurve = 1.8f;
 };
 
+// ---------------------------------------------------------------------------
+// Arranging
+//
+// A loop is a scene; a song is scenes placed one after another. The patterns
+// stay the unit you edit - a section does not copy them, it points at a scene
+// which points at them - so fixing a hi-hat fixes it everywhere it plays.
+//
+// Automation belongs to the section rather than to the track, because "the
+// filter opens over these two bars" is a statement about a place in the song,
+// not a property of the instrument.
+// ---------------------------------------------------------------------------
+
+/** Which pattern each track plays. -1 leaves a track silent for the scene. */
+struct Scene {
+    std::string name = "Scene";
+    std::vector<int> patterns;
+
+    int patternFor(size_t track) const {
+        return track < patterns.size() ? patterns[track] : 0;
+    }
+};
+
+/** A point on an automation curve: where, and how far up. */
+struct AutoPoint {
+    /** Position within the section, in bars. */
+    double bar = 0.0;
+    /** Normalised 0..1. The target's own table turns this into a real value. */
+    float value = 0.0f;
+};
+
+/**
+ * One parameter automated across one section.
+ *
+ * Values are normalised because a cutoff sweep is drawn as a shape, and the
+ * shape should mean the same thing whether it is sweeping 20 Hz to 20 kHz
+ * logarithmically or a send from nothing to full.
+ *
+ * A lane drives a set of tracks rather than one. "Open the filter on the drums"
+ * is a single gesture over three tracks, and drawing the same curve three times
+ * would be three curves to keep in agreement afterwards.
+ */
+struct AutoLane {
+    /** Tracks this lane drives. Ignored for master targets. */
+    std::vector<int> tracks;
+    /** Id from the automation target table. */
+    std::string param;
+    std::vector<AutoPoint> points;
+
+    /**
+     * Where the curve starts and ends, in bars.
+     *
+     * A ramp does not have to fill its section: drawn over bars 2 to 4 of an
+     * eight bar section, it holds its first value before bar 2 and its last
+     * after bar 4. The shape occupies exactly what was drawn.
+     */
+    double startBar() const { return points.empty() ? 0.0 : points.front().bar; }
+    double endBar() const { return points.empty() ? 0.0 : points.back().bar; }
+
+    /** Value at `bar`, interpolated. Flat before the first point and after the last. */
+    float valueAt(double bar) const {
+        if (points.empty()) return 0.0f;
+        if (bar <= points.front().bar) return points.front().value;
+        if (bar >= points.back().bar) return points.back().value;
+        for (size_t i = 1; i < points.size(); ++i) {
+            const auto& a = points[i - 1];
+            const auto& b = points[i];
+            if (bar <= b.bar) {
+                const double span = b.bar - a.bar;
+                if (span <= 1e-9) return b.value;
+                const double t = (bar - a.bar) / span;
+                return float(a.value + (b.value - a.value) * t);
+            }
+        }
+        return points.back().value;
+    }
+};
+
+/** A stretch of the song: one scene, held for a number of bars. */
+struct Section {
+    int scene = 0;
+    int bars = 4;
+    std::vector<AutoLane> lanes;
+};
+
 struct Song {
     std::string name = "Untitled";
     double bpm = 124.0;
@@ -216,6 +300,18 @@ struct Song {
     int barsPerLoop = 2;
     /** Index of the track whose hits drive the sidechain. -1 for none. */
     int sidechainSource = 0;
+
+    std::vector<Scene> scenes;
+    std::vector<Section> arrangement;
+    /** Play the arrangement rather than looping whatever is armed. */
+    bool songMode = false;
+
+    /** Total length of the arrangement, in bars. */
+    int songBars() const {
+        int total = 0;
+        for (const auto& s : arrangement) total += std::max(1, s.bars);
+        return total;
+    }
 
     bool anySolo() const {
         for (const auto& t : tracks) if (t.mixer.solo) return true;

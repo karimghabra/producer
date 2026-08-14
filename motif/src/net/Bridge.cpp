@@ -9,6 +9,7 @@
 #include <mutex>
 
 #include "audio/Engine.h"
+#include "music/Automation.h"
 #include "music/Params.h"
 #include "music/Presets.h"
 #include "music/Project.h"
@@ -69,12 +70,24 @@ constexpr uint32_t kTrackColours[] = {
 };
 constexpr size_t kTrackColourCount = sizeof(kTrackColours) / sizeof(kTrackColours[0]);
 
-/** Pull a value out of a flat JSON object without dragging in a parser. */
+/**
+ * Pull a value out of a flat JSON object without dragging in a parser.
+ *
+ * Matches keys only. The quoted name has to be followed by a colon to count,
+ * because a command name can also appear as a value: in
+ * {"type":"laneTrack",...,"laneTrack":2} the first occurrence of "laneTrack"
+ * is the type, and taking the colon after it read the next field's value
+ * instead. Every laneTrack command silently operated on track 0.
+ */
 bool field(const std::string& body, const std::string& key, std::string& out) {
     const std::string needle = "\"" + key + "\"";
-    auto pos = body.find(needle);
-    if (pos == std::string::npos) return false;
-    pos = body.find(':', pos + needle.size());
+    size_t pos = std::string::npos;
+    for (size_t at = body.find(needle); at != std::string::npos;
+         at = body.find(needle, at + needle.size())) {
+        size_t after = at + needle.size();
+        while (after < body.size() && std::isspace(static_cast<unsigned char>(body[after]))) ++after;
+        if (after < body.size() && body[after] == ':') { pos = after; break; }
+    }
     if (pos == std::string::npos) return false;
     ++pos;
     while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) ++pos;
@@ -211,6 +224,46 @@ std::string Bridge::stateJson() const {
                   << ",\"hit\":" << st.cond.hit
                   << ",\"of\":" << st.cond.of
                   << "}";
+            }
+            j << "]}";
+        }
+        j << "]}";
+    }
+    j << "]";
+
+    // --- the arrangement ---------------------------------------------------
+    j << ",\"songMode\":" << (song.songMode ? "true" : "false")
+      << ",\"songBar\":" << num(engine_.songBar(), 3)
+      << ",\"songBars\":" << song.songBars()
+      << ",\"section\":" << engine_.currentSection()
+      << ",\"scenes\":[";
+    for (size_t i = 0; i < song.scenes.size(); ++i) {
+        if (i) j << ',';
+        j << "{\"name\":\"" << esc(song.scenes[i].name) << "\",\"patterns\":[";
+        for (size_t t = 0; t < song.scenes[i].patterns.size(); ++t) {
+            if (t) j << ',';
+            j << song.scenes[i].patterns[t];
+        }
+        j << "]}";
+    }
+    j << "],\"arrangement\":[";
+    for (size_t i = 0; i < song.arrangement.size(); ++i) {
+        const Section& sec = song.arrangement[i];
+        if (i) j << ',';
+        j << "{\"scene\":" << sec.scene << ",\"bars\":" << sec.bars << ",\"lanes\":[";
+        for (size_t l = 0; l < sec.lanes.size(); ++l) {
+            const AutoLane& lane = sec.lanes[l];
+            if (l) j << ',';
+            j << "{\"tracks\":[";
+            for (size_t k = 0; k < lane.tracks.size(); ++k) {
+                if (k) j << ',';
+                j << lane.tracks[k];
+            }
+            j << "],\"param\":\"" << esc(lane.param) << "\",\"points\":[";
+            for (size_t p = 0; p < lane.points.size(); ++p) {
+                if (p) j << ',';
+                j << "{\"bar\":" << num(lane.points[p].bar, 4)
+                  << ",\"v\":" << num(lane.points[p].value, 4) << "}";
             }
             j << "]}";
         }
@@ -613,6 +666,215 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
     }
     // --- track manager ----------------------------------------------------
 
+    // --- arrangement --------------------------------------------------------
+
+    if (type == "songMode") {
+        engine_.editSong([&](Song& s) { s.songMode = value > 0.5; });
+        engine_.rewindSong();
+        return true;
+    }
+    if (type == "rewindSong") { engine_.rewindSong(); return true; }
+
+    if (type == "addScene") {
+        // A scene captures what is playing now. Building one by picking
+        // patterns from a list would be working blind; you get the loop
+        // sounding right and then keep it.
+        engine_.editSong([&](Song& s) {
+            Scene sc;
+            sc.name = "Scene " + std::to_string(s.scenes.size() + 1);
+            sc.patterns.reserve(s.tracks.size());
+            for (const auto& t : s.tracks)
+                sc.patterns.push_back(t.seqEnabled ? t.activePattern : -1);
+            s.scenes.push_back(std::move(sc));
+        });
+        return true;
+    }
+    if (type == "updateScene") {
+        const int index = intField(body, "scene", -1);
+        engine_.editSong([&](Song& s) {
+            if (index < 0 || index >= int(s.scenes.size())) return;
+            Scene& sc = s.scenes[size_t(index)];
+            sc.patterns.assign(s.tracks.size(), -1);
+            for (size_t t = 0; t < s.tracks.size(); ++t)
+                sc.patterns[t] = s.tracks[t].seqEnabled ? s.tracks[t].activePattern : -1;
+        });
+        return true;
+    }
+    if (type == "renameScene") {
+        const int index = intField(body, "scene", -1);
+        std::string name;
+        if (!field(body, "name", name)) { error = "missing name"; return false; }
+        engine_.editSong([&](Song& s) {
+            if (index >= 0 && index < int(s.scenes.size()) && !name.empty())
+                s.scenes[size_t(index)].name = name.substr(0, 24);
+        });
+        return true;
+    }
+    if (type == "removeScene") {
+        const int index = intField(body, "scene", -1);
+        engine_.editSong([&](Song& s) {
+            if (index < 0 || index >= int(s.scenes.size())) return;
+            s.scenes.erase(s.scenes.begin() + index);
+            // Sections referring to it would otherwise point past the end or,
+            // worse, silently at a different scene.
+            for (auto it = s.arrangement.begin(); it != s.arrangement.end();) {
+                if (it->scene == index) it = s.arrangement.erase(it);
+                else { if (it->scene > index) --it->scene; ++it; }
+            }
+            if (s.scenes.empty()) { s.arrangement.clear(); s.songMode = false; }
+        });
+        engine_.rewindSong();
+        return true;
+    }
+    /** Put the scene's pattern choice back on the tracks, for editing. */
+    if (type == "recallScene") {
+        const int index = intField(body, "scene", -1);
+        engine_.editSong([&](Song& s) {
+            if (index < 0 || index >= int(s.scenes.size())) return;
+            const Scene& sc = s.scenes[size_t(index)];
+            for (size_t t = 0; t < s.tracks.size(); ++t) {
+                const int p = sc.patternFor(t);
+                s.tracks[t].seqEnabled = p >= 0;
+                if (p >= 0 && p < int(s.tracks[t].patterns.size())) s.tracks[t].activePattern = p;
+            }
+        });
+        return true;
+    }
+
+    if (type == "addSection") {
+        const int scene = intField(body, "scene", 0);
+        const int bars = intField(body, "bars", 4);
+        engine_.editSong([&](Song& s) {
+            if (s.scenes.empty()) return;
+            Section sec;
+            sec.scene = std::clamp(scene, 0, int(s.scenes.size()) - 1);
+            sec.bars = std::clamp(bars, 1, 256);
+            const int at = intField(body, "at", -1);
+            if (at >= 0 && at <= int(s.arrangement.size()))
+                s.arrangement.insert(s.arrangement.begin() + at, std::move(sec));
+            else
+                s.arrangement.push_back(std::move(sec));
+        });
+        return true;
+    }
+    if (type == "removeSection") {
+        const int index = intField(body, "section", -1);
+        engine_.editSong([&](Song& s) {
+            if (index >= 0 && index < int(s.arrangement.size()))
+                s.arrangement.erase(s.arrangement.begin() + index);
+        });
+        engine_.rewindSong();
+        return true;
+    }
+    if (type == "sectionBars" || type == "sectionScene" || type == "moveSection") {
+        const int index = intField(body, "section", -1);
+        engine_.editSong([&](Song& s) {
+            if (index < 0 || index >= int(s.arrangement.size())) return;
+            if (type == "sectionBars") {
+                s.arrangement[size_t(index)].bars = std::clamp(intField(body, "value", 4), 1, 256);
+            } else if (type == "sectionScene") {
+                s.arrangement[size_t(index)].scene =
+                    std::clamp(intField(body, "value", 0), 0, int(s.scenes.size()) - 1);
+            } else {
+                const int to = std::clamp(intField(body, "to", 0), 0, int(s.arrangement.size()) - 1);
+                if (to == index) return;
+                Section moved = std::move(s.arrangement[size_t(index)]);
+                s.arrangement.erase(s.arrangement.begin() + index);
+                s.arrangement.insert(s.arrangement.begin() + to, std::move(moved));
+            }
+        });
+        return true;
+    }
+
+    // --- automation ---------------------------------------------------------
+
+    if (type == "addLane") {
+        const int index = intField(body, "section", -1);
+        const int laneTrack = intField(body, "laneTrack", -1);
+        std::string param;
+        if (!field(body, "param", param)) { error = "missing param"; return false; }
+        const AutoTarget* target = findAutoTarget(param);
+        if (!target) { error = "cannot automate " + param; return false; }
+        engine_.editSong([&](Song& s) {
+            if (index < 0 || index >= int(s.arrangement.size())) return;
+            Section& sec = s.arrangement[size_t(index)];
+            for (const auto& l : sec.lanes)
+                if (l.param == param) return;                // one lane per parameter
+            AutoLane lane;
+            lane.param = param;
+            if (!target->master && laneTrack >= 0) lane.tracks.push_back(laneTrack);
+            // Starts flat at whatever the mix already says, so adding a lane
+            // never changes the sound until you draw on it.
+            const float now = float(target->toNorm(
+                target->read(s, lane.tracks.empty() ? -1 : lane.tracks.front())));
+            lane.points = { { 0.0, now }, { double(std::max(1, sec.bars)), now } };
+            sec.lanes.push_back(std::move(lane));
+        });
+        return true;
+    }
+
+    /** Add or remove a track from a lane, so one curve can drive several. */
+    if (type == "laneTrack") {
+        const int index = intField(body, "section", -1);
+        const int lane = intField(body, "lane", -1);
+        const int track = intField(body, "laneTrack", -1);
+        const bool on = value > 0.5;
+        engine_.editSong([&](Song& s) {
+            if (index < 0 || index >= int(s.arrangement.size())) return;
+            auto& lanes = s.arrangement[size_t(index)].lanes;
+            if (lane < 0 || lane >= int(lanes.size())) return;
+            auto& tracks = lanes[size_t(lane)].tracks;
+            const auto it = std::find(tracks.begin(), tracks.end(), track);
+            if (on && it == tracks.end()) { tracks.push_back(track); std::sort(tracks.begin(), tracks.end()); }
+            else if (!on && it != tracks.end()) tracks.erase(it);
+        });
+        return true;
+    }
+    if (type == "removeLane") {
+        const int index = intField(body, "section", -1);
+        const int lane = intField(body, "lane", -1);
+        engine_.editSong([&](Song& s) {
+            if (index < 0 || index >= int(s.arrangement.size())) return;
+            auto& lanes = s.arrangement[size_t(index)].lanes;
+            if (lane >= 0 && lane < int(lanes.size())) lanes.erase(lanes.begin() + lane);
+        });
+        return true;
+    }
+    /** Replace a lane's whole curve. The interface owns the shape; this stores it. */
+    if (type == "laneCurve") {
+        const int index = intField(body, "section", -1);
+        const int lane = intField(body, "lane", -1);
+        std::string points;
+        if (!field(body, "points", points)) { error = "missing points"; return false; }
+
+        // "bar:value,bar:value,..." - a shape is a lot of small numbers, and a
+        // nested array would need a real parser on this side.
+        std::vector<AutoPoint> parsed;
+        size_t pos = 0;
+        while (pos < points.size()) {
+            const size_t colon = points.find(':', pos);
+            if (colon == std::string::npos) break;
+            const size_t comma = points.find(',', colon);
+            AutoPoint p;
+            p.bar = std::atof(points.substr(pos, colon - pos).c_str());
+            p.value = float(std::clamp(std::atof(
+                points.substr(colon + 1, comma == std::string::npos ? std::string::npos
+                                                                   : comma - colon - 1).c_str()), 0.0, 1.0));
+            parsed.push_back(p);
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+        std::sort(parsed.begin(), parsed.end(),
+                  [](const AutoPoint& a, const AutoPoint& b) { return a.bar < b.bar; });
+
+        engine_.editSong([&](Song& s) {
+            if (index < 0 || index >= int(s.arrangement.size())) return;
+            auto& lanes = s.arrangement[size_t(index)].lanes;
+            if (lane >= 0 && lane < int(lanes.size())) lanes[size_t(lane)].points = parsed;
+        });
+        return true;
+    }
+
     // --- projects ---------------------------------------------------------
 
     if (type == "save") {
@@ -917,6 +1179,28 @@ int Bridge::start(const std::string& webRoot, int preferredPort) {
             j << '"' << esc(names[i]) << '"';
         }
         j << "]}";
+        res.set_content(j.str(), "application/json");
+    });
+
+    // What can be automated, with the ranges and the reasons. Static, so the
+    // interface fetches it once.
+    server_->Get("/api/automation", [](const httplib::Request&, httplib::Response& res) {
+        std::ostringstream j;
+        j << '[';
+        const auto& targets = autoTargets();
+        for (size_t i = 0; i < targets.size(); ++i) {
+            const auto& t = targets[i];
+            if (i) j << ',';
+            j << "{\"id\":\"" << t.id << "\""
+              << ",\"label\":\"" << esc(t.label) << "\""
+              << ",\"master\":" << (t.master ? "true" : "false")
+              << ",\"min\":" << num(t.min, 3)
+              << ",\"max\":" << num(t.max, 3)
+              << ",\"log\":" << (t.log ? "true" : "false")
+              << ",\"unit\":\"" << esc(t.unit) << "\""
+              << ",\"help\":\"" << esc(t.help) << "\"}";
+        }
+        j << ']';
         res.set_content(j.str(), "application/json");
     });
 

@@ -14,6 +14,7 @@
       <button data-view="steps" class="tab">STEPS</button>
       <button data-view="mix" class="tab">MIX</button>
       <button data-view="sound" class="tab">SOUND</button>
+      <button data-view="song" class="tab">SONG</button>
     </nav>
     <button id="project" class="project" title="Save, open, or start a new project">
       <label>PROJECT</label><span id="project-name">Untitled</span>
@@ -86,6 +87,14 @@
         <!-- What the per-track VERB and DELAY knobs have always been sending to. -->
         <div id="master" class="master"></div>
       </div>
+      <!-- Bars assembled into a song. Scenes are the loops; sections place them
+           one after another; lanes draw what moves across each one. -->
+      <div id="view-song" class="view">
+        <div id="scene-bar" class="bar"></div>
+        <div id="song-lane" class="song-lane"></div>
+        <div id="section-detail" class="section-detail"></div>
+      </div>
+
       <div id="view-sound" class="view">
         <div id="preset-bar" class="bar wrap"></div>
         <div id="params" class="params"></div>

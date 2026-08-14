@@ -5,6 +5,7 @@
 
 #include "audio/Engine.h"
 #include "audio/Fx.h"
+#include "music/Automation.h"
 #include "music/Presets.h"
 #include "music/Project.h"
 #include "music/Quantizer.h"
@@ -461,6 +462,174 @@ int main() {
         const auto [offPeak, offCross] = renderWith(Mixer::Filter::Off, 220.0f);
         check(offPeak == openPeak && offCross == openCross,
               "cutoff is ignored while the filter is off", "identical output");
+    }
+
+    // --- arrangement and automation ------------------------------------------
+    std::printf("\nArrangement:\n");
+    {
+        // Curve reading, before anything renders it.
+        AutoLane lane;
+        lane.param = "cutoff";
+        lane.points = { { 0.0, 0.0f }, { 2.0, 1.0f } };
+        check(std::abs(lane.valueAt(1.0) - 0.5f) < 1e-6, "a ramp reads half way at half way",
+              std::to_string(lane.valueAt(1.0)).substr(0, 5));
+        check(lane.valueAt(-1.0) == 0.0f && lane.valueAt(9.0) == 1.0f,
+              "and holds flat outside its own span", "");
+
+        AutoLane multi;
+        multi.points = { { 0.0, 0.2f }, { 1.0, 1.0f }, { 3.0, 0.0f } };
+        check(std::abs(multi.valueAt(2.0) - 0.5f) < 1e-6,
+              "a drawn curve interpolates between its points",
+              std::to_string(multi.valueAt(2.0)).substr(0, 5));
+
+        // A target's own range, so a cutoff sweep spends its travel usefully.
+        const AutoTarget* cutoff = findAutoTarget("cutoff");
+        check(cutoff != nullptr && cutoff->log, "cutoff automates logarithmically", "");
+        check(cutoff && std::abs(cutoff->fromNorm(0.0) - 20.0) < 0.1
+                     && std::abs(cutoff->fromNorm(1.0) - 20000.0) < 1.0,
+              "across the audible range",
+              cutoff ? std::to_string(int(cutoff->fromNorm(0.5))) + " Hz at half" : "");
+
+        // Evaluation must not touch the song.
+        Song song = makeDefaultSong();
+        song.tracks[0].mixer.filterCutoff = 800.0f;
+        Section sec;
+        sec.bars = 2;
+        AutoLane sweep;
+        sweep.tracks = { 0 };
+        sweep.param = "cutoff";
+        sweep.points = { { 0.0, 0.0f }, { 2.0, 1.0f } };
+        sec.lanes.push_back(sweep);
+
+        const auto atStart = evaluate(song, sec, 0.0);
+        const auto atEnd = evaluate(song, sec, 2.0);
+        check(atStart.mixers[0].filterCutoff < 30.0f && atEnd.mixers[0].filterCutoff > 19000.0f,
+              "a sweep moves the value across the section",
+              std::to_string(int(atStart.mixers[0].filterCutoff)) + " -> "
+                  + std::to_string(int(atEnd.mixers[0].filterCutoff)) + " Hz");
+        check(std::abs(song.tracks[0].mixer.filterCutoff - 800.0f) < 0.01f,
+              "and leaves the song's own value alone",
+              std::to_string(int(song.tracks[0].mixer.filterCutoff)) + " Hz");
+
+        // An untouched target keeps whatever the mix says.
+        check(std::abs(atEnd.mixers[1].gain - song.tracks[1].mixer.gain) < 1e-6,
+              "parameters with no lane are untouched", "");
+
+        // A ramp need not fill its section. Drawn over bars 2 to 4 of an eight
+        // bar section it occupies exactly that, holding either side.
+        Section partial;
+        partial.bars = 8;
+        AutoLane shortRamp;
+        shortRamp.tracks = { 0 };
+        shortRamp.param = "gain";
+        shortRamp.points = { { 2.0, 0.0f }, { 4.0, 1.0f } };
+        partial.lanes.push_back(shortRamp);
+
+        const float before = evaluate(song, partial, 0.5).mixers[0].gain;
+        const float atStartOfRamp = evaluate(song, partial, 2.0).mixers[0].gain;
+        const float halfway = evaluate(song, partial, 3.0).mixers[0].gain;
+        const float atEndOfRamp = evaluate(song, partial, 4.0).mixers[0].gain;
+        const float after = evaluate(song, partial, 7.5).mixers[0].gain;
+        check(before == atStartOfRamp && std::abs(before) < 1e-6f,
+              "before a ramp starts it holds its first value",
+              std::to_string(before).substr(0, 5));
+        check(std::abs(halfway - 0.75f) < 0.01f, "it moves only across its own span",
+              "bar 3 of 8 = " + std::to_string(halfway).substr(0, 5) + " of 1.5");
+        check(after == atEndOfRamp && after > 1.49f,
+              "and holds its last value afterwards", std::to_string(after).substr(0, 5));
+
+        // Sub-bar ramps: a swell over a quarter of a bar is a normal thing to want.
+        Section tiny;
+        tiny.bars = 4;
+        AutoLane flick;
+        flick.tracks = { 0 };
+        flick.param = "gain";
+        flick.points = { { 1.0, 0.0f }, { 1.25, 1.0f } };
+        tiny.lanes.push_back(flick);
+        check(std::abs(evaluate(song, tiny, 1.125).mixers[0].gain - 0.75f) < 0.01f,
+              "a ramp can be a quarter of a bar long",
+              std::to_string(evaluate(song, tiny, 1.125).mixers[0].gain).substr(0, 5));
+
+        // One curve, several tracks.
+        Section shared;
+        shared.bars = 4;
+        AutoLane group;
+        group.tracks = { 0, 1, 2 };
+        group.param = "cutoff";
+        group.points = { { 0.0, 0.0f }, { 4.0, 1.0f } };
+        shared.lanes.push_back(group);
+        const auto driven = evaluate(song, shared, 4.0);
+        check(driven.mixers[0].filterCutoff > 19000.0f && driven.mixers[1].filterCutoff > 19000.0f
+                  && driven.mixers[2].filterCutoff > 19000.0f,
+              "one curve drives every track selected for it",
+              "3 tracks at " + std::to_string(int(driven.mixers[0].filterCutoff)) + " Hz");
+        check(std::abs(driven.mixers[3].filterCutoff
+                       - song.tracks[3].mixer.filterCutoff) < 0.01f,
+              "and leaves the ones that are not", "");
+
+        // A lane pointing at a track that no longer exists must not crash.
+        Section stale;
+        AutoLane ghost;
+        ghost.tracks = { 99 };
+        ghost.param = "gain";
+        ghost.points = { { 0.0, 1.0f } };
+        stale.lanes.push_back(ghost);
+        const auto survived = evaluate(song, stale, 0.0);
+        check(survived.mixers.size() == song.tracks.size(),
+              "a lane on a deleted track is ignored rather than fatal", "");
+    }
+    {
+        // The transport, rendered. A section that silences a track must
+        // actually silence it, and the next section must bring it back.
+        constexpr double SR = 48000.0;
+        const int blockSize = 256;
+
+        Song song = makeDefaultSong();
+        song.bpm = 120.0;                      // one bar = 2 seconds at 4/4
+        song.songMode = true;
+
+        Scene loud;
+        loud.name = "Loud";
+        loud.patterns.assign(song.tracks.size(), 0);
+        Scene quiet;
+        quiet.name = "Quiet";
+        quiet.patterns.assign(song.tracks.size(), -1);   // nothing plays
+        quiet.patterns[0] = 0;                            // except the kick
+        song.scenes = { loud, quiet };
+
+        song.arrangement = { Section{ 0, 1, {} }, Section{ 1, 1, {} } };
+
+        Engine engine;
+        engine.prepare(SR, blockSize);
+        engine.setSong(song);
+        engine.rewindSong();
+        engine.setPlaying(true);
+
+        auto renderBars = [&](double bars) {
+            const int samples = int(bars * 4.0 * (60.0 / song.bpm) * SR);
+            std::vector<float> l(size_t(blockSize), 0.0f), r(size_t(blockSize), 0.0f);
+            float peak = 0.0f;
+            for (int done = 0; done < samples; done += blockSize) {
+                engine.render(l.data(), r.data(), blockSize);
+                for (int i = 0; i < blockSize; ++i) peak = std::max(peak, std::abs(l[i]));
+            }
+            return peak;
+        };
+
+        const float first = renderBars(0.9);
+        check(first > 0.02f, "the arrangement plays", "peak " + std::to_string(first).substr(0, 5));
+        check(engine.currentSection() == 0, "starting in the first section",
+              "section " + std::to_string(engine.currentSection()));
+
+        renderBars(0.3);                        // over the boundary
+        check(engine.currentSection() == 1, "and moving into the next on time",
+              "section " + std::to_string(engine.currentSection()) + " at bar "
+                  + std::to_string(engine.songBar()).substr(0, 4));
+
+        // Back round to the top rather than running off the end.
+        renderBars(1.0);
+        check(engine.currentSection() == 0, "then looping back to the top",
+              "section " + std::to_string(engine.currentSection()));
     }
 
     // --- the project format ------------------------------------------------

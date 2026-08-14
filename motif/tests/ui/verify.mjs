@@ -27,6 +27,22 @@ const out = [];
 const check = (ok, what, detail = '') =>
   out.push(`${ok ? 'PASS' : 'FAIL'}  ${what.padEnd(46)} ${detail}`);
 const pctOf = (v) => Math.round(v * 100) + '%';
+
+/**
+ * Wait for the engine to actually reach a state.
+ *
+ * Sleeping a fixed time after a click is a guess. Where a click rebuilds the
+ * panel it was in, the next click can land while the old nodes are being
+ * replaced - which is exactly how two lane-track clicks became one.
+ */
+const waitFor = async (predicate, ms = 3000) => {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (predicate(await engine())) return true;
+    if (Date.now() > deadline) return false;
+    await page.waitForTimeout(60);
+  }
+};
 const NOTE_ORDER = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
 let browser, page, owned = false;
@@ -725,6 +741,169 @@ check(await page.locator('#keys .key.down').count() === 0,
       'typing in a field does not play the keyboard');
 await page.keyboard.press('Escape');
 await page.waitForTimeout(200);
+
+// --- assembling a song -------------------------------------------------------
+await cmd({ type: 'newSong' });
+await page.locator('[data-view="song"]').click();
+await page.waitForTimeout(450);
+
+check(await page.locator('.song-empty').count() === 1,
+      'the song view explains itself when empty');
+
+// Keep the current loop as a scene, twice, so there is something to arrange.
+await page.locator('#scene-bar .chip.ghost').click();
+await page.waitForTimeout(400);
+check((await engine()).scenes.length === 1, 'a loop can be kept as a scene',
+      `${(await engine()).scenes.length} scenes`);
+const kept = (await engine()).scenes[0];
+check(kept.patterns.length === 6, 'and it captures every track',
+      `patterns ${kept.patterns.join(',')}`);
+
+// Silence a track, keep that as a second scene: the difference is the point.
+await cmd({ type: 'seqEnabled', track: 4, value: 0 });
+await cmd({ type: 'seqEnabled', track: 5, value: 0 });
+await page.waitForTimeout(300);
+await page.locator('#scene-bar .chip.ghost').click();
+await page.waitForTimeout(400);
+const scenes = (await engine()).scenes;
+check(scenes.length === 2 && scenes[1].patterns[4] === -1,
+      'a scene remembers which tracks sit out',
+      `scene 2 track 5 = ${scenes[1].patterns[4]}`);
+
+// Place sections.
+await page.locator('.section-add').click();
+await page.waitForTimeout(400);
+check((await engine()).arrangement.length === 1, 'a section can be placed',
+      `${(await engine()).arrangement.length} sections`);
+await page.locator('.section-add').click();
+await page.waitForTimeout(400);
+await page.locator('#song-lane .section').nth(1).click();
+await page.waitForTimeout(300);
+await page.locator('#section-detail .sec-select').selectOption('1');
+await page.waitForTimeout(400);
+check((await engine()).arrangement[1].scene === 1, 'and pointed at a different scene',
+      `section 2 plays scene ${(await engine()).arrangement[1].scene}`);
+
+// Length, in bars.
+for (let i = 0; i < 4; i++) {
+  await page.locator('#section-detail .stepper button', { hasText: '+' }).click();
+  await page.waitForTimeout(140);
+}
+check((await engine()).arrangement[1].bars === 8, 'section length is editable',
+      `${(await engine()).arrangement[1].bars} bars`);
+check((await engine()).songBars === 12, 'and the song is as long as its parts',
+      `${(await engine()).songBars} bars`);
+
+// Sections are drawn in proportion to their length.
+const widths = await page.evaluate(() =>
+  [...document.querySelectorAll('#song-lane .section')].map((el) => el.getBoundingClientRect().width));
+check(widths[1] > widths[0] * 1.6, 'an eight-bar section is drawn twice as wide as a four',
+      widths.map((w) => Math.round(w)).join(' / '));
+
+// --- automation --------------------------------------------------------------
+await cmd({ type: 'filter', track: 0, what: 'type', value: 1 });   // give it something to sweep
+await page.waitForTimeout(300);
+await page.locator('#section-detail .chip.ghost', { hasText: 'AUTOMATE' }).click();
+await page.waitForTimeout(300);
+await page.locator('#track-menu .chip', { hasText: 'cutoff' }).click();
+await page.waitForTimeout(450);
+const withLane = (await engine()).arrangement[1];
+check(withLane.lanes.length === 1 && withLane.lanes[0].param === 'cutoff',
+      'a lane can be added', withLane.lanes[0]?.param);
+check(withLane.lanes[0].points.length === 2
+      && withLane.lanes[0].points[0].v === withLane.lanes[0].points[1].v,
+      'and starts flat, so adding it changes nothing yet',
+      withLane.lanes[0].points.map((p) => p.v).join(' -> '));
+
+// A lane drives a set of tracks, chosen on the lane itself.
+check(await page.locator('.lane-tracks .track-pick').count() === 6,
+      'every track can be added to a curve');
+check(await page.locator('.lane-tracks .track-pick.on').count() === 1,
+      'starting with the armed one');
+const laneTracks = (s) => s.arrangement[1].lanes[0].tracks;
+await page.locator('.lane-tracks .track-pick', { hasText: 'Clap' }).click();
+await waitFor((s) => laneTracks(s).includes(1));
+await page.locator('.lane-tracks .track-pick', { hasText: 'Hats' }).click();
+await waitFor((s) => laneTracks(s).includes(2));
+const shared = (await engine()).arrangement[1].lanes[0];
+check(shared.tracks.length === 3, 'and more can be added to the same curve',
+      'tracks ' + shared.tracks.join(','));
+await page.locator('.lane-tracks .track-pick', { hasText: 'Clap' }).click();
+await waitFor((s) => !laneTracks(s).includes(1));
+check((await engine()).arrangement[1].lanes[0].tracks.length === 2,
+      'and taken off again',
+      'tracks ' + (await engine()).arrangement[1].lanes[0].tracks.join(','));
+
+// Shape presets work over the lane's own span, not the section's.
+await page.locator('.lane .chip', { hasText: 'Ramp up' }).click();
+await page.waitForTimeout(400);
+const ramped = (await engine()).arrangement[1].lanes[0].points;
+check(ramped[0].v < 0.01 && ramped.at(-1).v > 0.99,
+      'a ramp rises across its span',
+      ramped[0].v + ' at bar ' + ramped[0].bar + ' -> '
+        + ramped.at(-1).v + ' at bar ' + ramped.at(-1).bar);
+
+// Drawing over part of the section must stay over that part.
+const laneBox = await page.locator('.lane-canvas').first().boundingBox();
+const x0 = laneBox.x + laneBox.width * 0.25;
+const x1 = laneBox.x + laneBox.width * 0.6;
+await page.mouse.move(x0, laneBox.y + laneBox.height - 6);
+await page.mouse.down();
+await page.mouse.move(x1, laneBox.y + 6, { steps: 16 });
+await page.mouse.up();
+await page.waitForTimeout(500);
+const drawn = (await engine()).arrangement[1].lanes[0].points;
+check(drawn.length > 5, 'dragging draws a curve rather than two points',
+      drawn.length + ' points');
+check(drawn[0].bar > 1.2 && drawn.at(-1).bar < 5.6,
+      'a ramp occupies only the bars it was drawn over, not the whole section',
+      'bars ' + drawn[0].bar.toFixed(2) + '-' + drawn.at(-1).bar.toFixed(2)
+        + ' of ' + (await engine()).arrangement[1].bars);
+check(drawn[0].v < 0.3 && drawn.at(-1).v > 0.7, 'and rises the way it was drawn',
+      drawn[0].v.toFixed(2) + ' -> ' + drawn.at(-1).v.toFixed(2));
+
+// The automation must not have written into the mix.
+check(Math.abs((await engine()).tracks[0].mixer.filterCutoff - 1200) < 1,
+      "drawing automation leaves the track's own value alone",
+      Math.round((await engine()).tracks[0].mixer.filterCutoff) + ' Hz');
+
+// --- playing the arrangement -------------------------------------------------
+await page.locator('#scene-bar .chip', { hasText: 'LOOP MODE' }).click();
+await page.waitForTimeout(300);
+check((await engine()).songMode === true, 'song mode engages');
+await cmd({ type: 'rewindSong' });
+await cmd({ type: 'play' });
+await page.waitForTimeout(1500);
+const runningA = await engine();
+check(runningA.section === 0, 'playback starts at the first section',
+      `section ${runningA.section}, bar ${runningA.songBar.toFixed(2)}`);
+check(runningA.songBar > 0.1, 'and the song position advances',
+      `bar ${runningA.songBar.toFixed(2)}`);
+await page.waitForTimeout(2600);
+const runningB = await engine();
+check(runningB.songBar > runningA.songBar, 'it keeps moving through the arrangement',
+      `${runningA.songBar.toFixed(2)} -> ${runningB.songBar.toFixed(2)} of ${runningB.songBars}`);
+await cmd({ type: 'stop' });
+await cmd({ type: 'songMode', value: 0 });
+await page.waitForTimeout(300);
+
+// Saving must carry all of it.
+await cmd({ type: 'save', name: 'Arrangement Check' });
+await cmd({ type: 'newSong' });
+await page.waitForTimeout(400);
+await cmd({ type: 'load', name: 'Arrangement Check' });
+await page.waitForTimeout(600);
+const reloaded = await engine();
+check(reloaded.scenes.length === 2 && reloaded.arrangement.length === 2,
+      'scenes and sections survive a save',
+      `${reloaded.scenes.length} scenes, ${reloaded.arrangement.length} sections`);
+check(reloaded.arrangement[1].lanes[0]?.points.length === drawn.length,
+      'and so does a drawn curve, point for point',
+      `${reloaded.arrangement[1].lanes[0]?.points.length} points`);
+await cmd({ type: 'deleteProject', name: 'Arrangement Check' });
+await cmd({ type: 'newSong' });
+await page.locator('[data-view="grid"]').click();
+await page.waitForTimeout(400);
 
 // --- projects ----------------------------------------------------------------
 //
