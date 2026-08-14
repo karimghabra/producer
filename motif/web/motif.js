@@ -534,6 +534,45 @@ function renderStepDetail(track, pat) {
       'How long the note is held, in steps. Only matters on pitched tracks.'),
   );
 
+  // Pitch, on tracks that have one. Degrees rather than semitones: the step
+  // stores where it sits in the key, so a part transposes with the song
+  // instead of going out of key when the key changes.
+  if (!track.isDrum) {
+    const pitch = document.createElement('div');
+    pitch.className = 'sd-group';
+    pitch.title = 'NOTE\n\nWhich degree of the scale this step plays. 1 is the '
+      + 'tonic. Because it is stored as a degree rather than a fixed note, the '
+      + 'part follows the song when you change key.';
+    const degrees = state.key.degrees;
+    pitch.innerHTML = `<label>NOTE &mdash; ${noteName(stepNote(s))}</label>`;
+    const pr = document.createElement('div');
+    pr.className = 'choice-row';
+    for (let d = 0; d < degrees; d++) {
+      const b = document.createElement('button');
+      b.className = 'chip tiny' + (((s.deg % degrees) + degrees) % degrees === d ? ' on' : '');
+      b.textContent = noteName(stepNote({ ...s, deg: d, oct: 0 })).replace(/-?\d+$/, '');
+      b.onclick = () => edit('deg', d + Math.floor(s.deg / degrees) * degrees);
+      pr.append(b);
+    }
+    pitch.append(pr);
+
+    const octRow = document.createElement('div');
+    octRow.className = 'choice-row';
+    const octLabel = document.createElement('span');
+    octLabel.className = 'sd-inline';
+    octLabel.textContent = 'OCTAVE';
+    octRow.append(octLabel);
+    for (let o = -2; o <= 2; o++) {
+      const b = document.createElement('button');
+      b.className = 'chip tiny' + (s.oct === o ? ' on' : '');
+      b.textContent = o > 0 ? '+' + o : String(o);
+      b.onclick = () => edit('oct', o);
+      octRow.append(b);
+    }
+    pitch.append(octRow);
+    host.append(pitch);
+  }
+
   // Ratchet and degree are small integers, so buttons rather than knobs: you
   // pick 3 rather than hunt for it.
   const ratchet = document.createElement('div');
@@ -762,6 +801,37 @@ function gridColumns() {
   return Math.min(Math.max(...lengths, 8), 32);
 }
 
+/**
+ * A step's pitch, as a MIDI note. Mirrors degreeToMidi in Theory.h.
+ *
+ * Steps store a scale degree rather than a semitone, so a part follows the key
+ * when the key changes. That is also why this is a function of the song and
+ * not of the step alone.
+ */
+function stepNote(s) {
+  const steps = SCALE_STEPS[state.key.scaleIndex] ?? SCALE_STEPS[0];
+  const n = steps.length;
+  const wrapped = ((s.deg % n) + n) % n;
+  const shift = Math.floor(s.deg / n);
+  return 12 * (5 + s.oct + shift) + state.key.root + steps[wrapped];
+}
+
+const noteName = (midi) => NOTE_NAMES[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
+
+/**
+ * Where a step sits within the pattern's own pitch range, 0 at the bottom.
+ *
+ * Scaled to what the part actually uses rather than to all 128 notes: a
+ * bassline moving over a fifth should look like it moves, not like a flat line
+ * near the bottom of the piano.
+ */
+function pitchSpan(pat) {
+  const notes = pat.steps.slice(0, pat.length).filter((s) => s.on).map(stepNote);
+  if (!notes.length) return null;
+  const lo = Math.min(...notes), hi = Math.max(...notes);
+  return { lo, hi, range: Math.max(hi - lo, 4) };
+}
+
 function renderGrid() {
   const cols = gridColumns();
 
@@ -818,6 +888,9 @@ function renderGrid() {
     cells.className = 'grow-cells';
     cells.style.gridTemplateColumns = `repeat(${cols},1fr)`;
 
+    const pitched = !t.isDrum;
+    const span = pitched ? pitchSpan(pat) : null;
+
     for (let i = 0; i < cols; i++) {
       const step = i % pat.length;
       const repeat = i >= pat.length;
@@ -828,10 +901,30 @@ function renderGrid() {
         + (repeat ? ' ghost' : '')
         + (i % res === 0 ? ' beat' : '')
         + (step === 0 && repeat ? ' wrap' : '')
+        + (pitched ? ' pitched' : '')
         + (state.playing && step === t.step ? ' here' : '');
       if (s?.on) el.style.setProperty('--v', 0.35 + 0.65 * s.vel);
-      el.title = `${t.name} - step ${step + 1}`;
+
+      if (s?.on && pitched) {
+        // The note, and where it sits in the line. The bar is the melodic
+        // contour: you read the shape of a part across the row without having
+        // to decode note names one at a time.
+        const midi = stepNote(s);
+        const h = span ? (midi - span.lo) / span.range : 0.5;
+        // Travel starts above the label rather than at the floor of the cell,
+        // or the lowest note in a part draws its bar straight through its own
+        // name.
+        el.innerHTML = `<span class="pitchbar" style="bottom:${26 + h * 58}%"></span>`
+                     + `<span class="note">${noteName(midi)}</span>`;
+      }
+
+      el.title = pitched && s?.on
+        ? `${t.name} - step ${step + 1}, ${noteName(stepNote(s))}\nDrag up or down to change the note`
+        : `${t.name} - step ${step + 1}`;
+
+      if (pitched) attachPitchDrag(el, ti, step, s);
       el.onclick = () => {
+        if (el.dataset.dragged) { delete el.dataset.dragged; return; }
         api.send('toggleStep', { track: ti, step });
         // Editing a track is a statement about which one you are working on.
         if (ti !== selected) { selected = ti; api.send('selectTrack', { track: ti }); }
@@ -843,6 +936,48 @@ function renderGrid() {
     }
     row.append(cells);
     host.append(row);
+  });
+}
+
+/**
+ * Drag a step up or down to change its note, without leaving the grid.
+ *
+ * Degrees rather than semitones, so dragging moves through the key: every
+ * position you can drag to is in the scale. One row of travel per degree,
+ * which is close enough to a piano roll that the gesture reads the same way
+ * while the other tracks stay on screen.
+ */
+function attachPitchDrag(el, trackIndex, step, s) {
+  el.addEventListener('pointerdown', (e) => {
+    if (!s?.on || e.button !== 0) return;
+    const startY = e.clientY;
+    const startDeg = s.deg;
+    let moved = false;
+    el.setPointerCapture(e.pointerId);
+    interacting = true;
+
+    const move = (ev) => {
+      const delta = Math.round((startY - ev.clientY) / 14);
+      if (!moved && Math.abs(startY - ev.clientY) < 5) return;
+      moved = true;
+      const want = startDeg + delta;
+      if (want === s.deg) return;
+      s.deg = want;                        // optimistic, so the label tracks
+      const midi = stepNote(s);
+      el.querySelector('.note').textContent = noteName(midi);
+      api.send('stepEdit', { track: trackIndex, step, what: 'deg', value: want });
+    };
+    const up = () => {
+      el.releasePointerCapture(e.pointerId);
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      interacting = false;
+      // Tell the click handler this was a drag, or letting go would also
+      // toggle the step you just finished tuning.
+      if (moved) { el.dataset.dragged = '1'; lastShape = null; }
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
   });
 }
 

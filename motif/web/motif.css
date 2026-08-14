@@ -199,6 +199,15 @@ section { padding:14px; overflow:auto; min-width:0; }
 /* The repeat, dimmed: same pattern coming round again, so where two tracks of
    different lengths pull apart is visible rather than implied. */
 .gcell.ghost { opacity:.34; }
+.gcell.pitched.on { cursor:ns-resize; }
+
+/* The note, and where it sits in the line. The bar is the melodic contour -
+   the shape of a part is readable across the row without decoding note names
+   one at a time. */
+.pitchbar { position:absolute; left:14%; right:14%; height:3px; border-radius:2px;
+            background:rgba(0,0,0,.55); pointer-events:none; }
+.gcell .note { position:absolute; left:0; right:0; bottom:2px; text-align:center;
+               font:700 8.5px var(--mono); color:rgba(0,0,0,.6); pointer-events:none; }
 .gcell.wrap { border-left:1px solid #3a4761; }
 .gcell:hover { border-color:#4a5a78; }
 .gcell.here { box-shadow:inset 0 0 0 2px var(--gold); }
@@ -242,7 +251,8 @@ section { padding:14px; overflow:auto; min-width:0; }
 .sd-group { margin-bottom:9px; }
 .sd-group > label { display:block; font:700 8.5px var(--sans); letter-spacing:.14em;
                     color:var(--dimmer); margin-bottom:5px; }
-.sd-group .choice-row { margin-bottom:4px; }
+.sd-group .choice-row { margin-bottom:4px; align-items:center; }
+.sd-inline { font-size:8.5px; letter-spacing:.13em; color:var(--dimmer); margin-right:3px; }
 .steps { display:grid; grid-template-columns:repeat(16,1fr); gap:5px; }
 .step {
   position:relative; aspect-ratio:1/1.05; border-radius:6px;

@@ -27,6 +27,7 @@ const out = [];
 const check = (ok, what, detail = '') =>
   out.push(`${ok ? 'PASS' : 'FAIL'}  ${what.padEnd(46)} ${detail}`);
 const pctOf = (v) => Math.round(v * 100) + '%';
+const NOTE_ORDER = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
 let browser, page, owned = false;
 
@@ -377,6 +378,56 @@ const kickGhosts = await page.locator('#grid-rows .grow').nth(0).locator('.gcell
 check(ghosts === 4 && kickGhosts === 0,
       'a shorter pattern shows where it repeats',
       `12-step track has ${ghosts} repeat cells, 16-step track has ${kickGhosts}`);
+
+// --- notes, edited from inside the grid --------------------------------------
+//
+// Pitched tracks show the note each step plays and let it be dragged, so a
+// line can be written without leaving the view that shows every other track.
+const bassRow = page.locator('#grid-rows .grow').nth(4);
+const noteLabels = await bassRow.locator('.gcell.on:not(.ghost) .note').allTextContents();
+check(noteLabels.length > 0, 'pitched steps show their note', noteLabels.slice(0, 6).join(' '));
+check(await page.locator('#grid-rows .grow').nth(0).locator('.note').count() === 0,
+      'drum steps do not, having no pitch');
+
+const bassStep = async (n) => (await engine()).tracks[4].patterns[0].steps[n];
+const firstLit = (await engine()).tracks[4].patterns[0].steps.findIndex((s) => s.on);
+const degBefore = (await bassStep(firstLit)).deg;
+const cell = bassRow.locator('.gcell').nth(firstLit);
+const cb = await cell.boundingBox();
+await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
+await page.mouse.down();
+await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2 - 42, { steps: 10 });
+await page.mouse.up();
+await page.waitForTimeout(400);
+const degAfter = (await bassStep(firstLit)).deg;
+check(degAfter > degBefore, 'dragging a step up raises its note',
+      `degree ${degBefore} -> ${degAfter}`);
+check((await bassStep(firstLit)).on === true,
+      'and the drag does not toggle the step off');
+
+// Everything reachable by dragging must be in the key - that is what storing a
+// degree rather than a semitone buys.
+const A_MINOR_PC = [9, 11, 0, 2, 4, 5, 7];
+const afterLabels = await bassRow.locator('.gcell.on:not(.ghost) .note').allTextContents();
+const pcOf = (label) => NOTE_ORDER.indexOf(label.replace(/-?\d+$/, ''));
+check(afterLabels.every((l) => A_MINOR_PC.includes(pcOf(l))),
+      'a retuned note is still in the key', afterLabels.slice(0, 6).join(' '));
+
+// And the same edit is available in the step detail panel.
+await page.locator('[data-view="steps"]').click();
+await cmd({ type: 'selectTrack', track: 4 });
+await page.waitForTimeout(400);
+await page.locator('.step').nth(firstLit).click();
+await page.locator('.step').nth(firstLit).click();      // leave it on
+await page.waitForTimeout(350);
+const noteGroup = page.locator('#step-detail .sd-group', { hasText: 'NOTE' });
+check(await noteGroup.count() === 1, 'the step panel offers the note too');
+await noteGroup.locator('.chip').nth(2).click();
+await page.waitForTimeout(350);
+check((await bassStep(firstLit)).deg % 7 === 2, 'picking a degree sets the note',
+      `degree ${(await bassStep(firstLit)).deg}`);
+await page.locator('[data-view="grid"]').click();
+await page.waitForTimeout(350);
 
 // Solo and mute from the grid.
 await page.locator('#grid-rows .grow').nth(1).locator('.badge', { hasText: 'M' }).click();
