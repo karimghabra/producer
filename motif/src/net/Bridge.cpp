@@ -48,6 +48,25 @@ std::string num(double v, int decimals = 4) {
     return s.empty() ? "0" : s;
 }
 
+/**
+ * Colours handed to new tracks, in order.
+ *
+ * Chosen to stay distinguishable against the dark background and from each
+ * other, since a track's colour is how it is identified everywhere else in the
+ * interface - the rail, the step grid, the mixer strip, the keyboard.
+ */
+constexpr uint32_t kTrackColours[] = {
+    0xffff5c7a,   // rose
+    0xffffb86b,   // amber
+    0xff5ee6c5,   // mint
+    0xffffd479,   // gold
+    0xffc77dff,   // violet
+    0xff6ba8ff,   // blue
+    0xff8fe36b,   // green
+    0xffff8fd4,   // pink
+};
+constexpr size_t kTrackColourCount = sizeof(kTrackColours) / sizeof(kTrackColours[0]);
+
 /** Pull a value out of a flat JSON object without dragging in a parser. */
 bool field(const std::string& body, const std::string& key, std::string& out) {
     const std::string needle = "\"" + key + "\"";
@@ -103,6 +122,7 @@ std::string Bridge::stateJson() const {
       << ",\"peak\":" << num(engine_.outputPeak())
       << ",\"reduction\":" << num(engine_.limiterReduction())
       << ",\"cycle\":" << song.polymeterCycle()
+      << ",\"sidechainSource\":" << song.sidechainSource
       << ",\"key\":{\"root\":" << song.key.root
       << ",\"scale\":\"" << esc(theory::scaleName(song.key.scale)) << "\"}"
       << ",\"master\":{"
@@ -409,6 +429,143 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
         onTrack([&](Track& t, Song&) { t.activePattern = std::clamp(index, 0, int(t.patterns.size()) - 1); });
         return true;
     }
+    // --- track manager ----------------------------------------------------
+
+    if (type == "newSong") {
+        engine_.setSong(makeDefaultSong());
+        { std::lock_guard<std::mutex> lock(takeMutex_);
+          take_ = {}; takeTrack_ = takePattern_ = -1; ++takeRev_; }
+        return true;
+    }
+
+    if (type == "addTrack") {
+        std::string kind;
+        field(body, "kind", kind);
+        const bool drum = kind != "synth";
+        engine_.editSong([&](Song& s) {
+            if (int(s.tracks.size()) >= Engine::kMaxTracks) return;
+            Track t;
+            t.name = drum ? "Drum" : "Synth";
+            t.instrument.isDrum = drum;
+            t.colour = kTrackColours[s.tracks.size() % kTrackColourCount];
+            // A new track starts silent rather than repeating whatever the
+            // default pattern happens to be - it is yours to fill in.
+            t.patterns.assign(1, Pattern{});
+            for (auto& st : t.patterns[0].steps) st.on = false;
+            // Arm it: adding a track is how you say what you want to play next.
+            for (auto& other : s.tracks) other.armed = false;
+            t.armed = true;
+            s.tracks.push_back(std::move(t));
+        });
+        return true;
+    }
+
+    if (type == "removeTrack") {
+        engine_.editSong([&](Song& s) {
+            if (track < 0 || track >= int(s.tracks.size())) return;
+            // Never leave the song with nothing in it; there would be no way
+            // back to a playable state from the interface.
+            if (s.tracks.size() <= 1) return;
+            const bool wasArmed = s.tracks[size_t(track)].armed;
+            s.tracks.erase(s.tracks.begin() + track);
+            if (s.sidechainSource == track) s.sidechainSource = -1;
+            else if (s.sidechainSource > track) --s.sidechainSource;
+            if (wasArmed) s.tracks[size_t(std::min<size_t>(size_t(track), s.tracks.size() - 1))].armed = true;
+        });
+        return true;
+    }
+
+    if (type == "duplicateTrack") {
+        engine_.editSong([&](Song& s) {
+            if (track < 0 || track >= int(s.tracks.size())) return;
+            if (int(s.tracks.size()) >= Engine::kMaxTracks) return;
+            Track copy = s.tracks[size_t(track)];
+            copy.name += " 2";
+            copy.mixer.solo = false;
+            for (auto& t : s.tracks) t.armed = false;
+            copy.armed = true;
+            s.tracks.insert(s.tracks.begin() + track + 1, std::move(copy));
+        });
+        return true;
+    }
+
+    if (type == "renameTrack") {
+        std::string name;
+        if (!field(body, "name", name)) { error = "missing name"; return false; }
+        if (name.size() > 24) name.resize(24);
+        onTrack([&](Track& t, Song&) { if (!name.empty()) t.name = name; });
+        return true;
+    }
+
+    if (type == "moveTrack") {
+        const int to = intField(body, "to", -1);
+        engine_.editSong([&](Song& s) {
+            const int n = int(s.tracks.size());
+            if (track < 0 || track >= n || to < 0 || to >= n || to == track) return;
+            Track moved = std::move(s.tracks[size_t(track)]);
+            s.tracks.erase(s.tracks.begin() + track);
+            s.tracks.insert(s.tracks.begin() + to, std::move(moved));
+        });
+        return true;
+    }
+
+    if (type == "trackColour") {
+        onTrack([&](Track& t, Song&) {
+            t.colour = 0xff000000u | (uint32_t(intField(body, "colour", 0x5ee6c5)) & 0xffffffu);
+        });
+        return true;
+    }
+
+    if (type == "seqEnabled") { onTrack([&](Track& t, Song&) { t.seqEnabled = value > 0.5; }); return true; }
+
+    if (type == "sidechainSource") {
+        engine_.editSong([&](Song& s) {
+            s.sidechainSource = (track >= -1 && track < int(s.tracks.size())) ? track : -1;
+        });
+        return true;
+    }
+
+    // --- patterns ---------------------------------------------------------
+
+    if (type == "addPattern") {
+        onTrack([&](Track& t, Song&) {
+            if (t.patterns.size() >= 16) return;
+            Pattern p;
+            for (auto& st : p.steps) st.on = false;
+            p.name = "Pat " + std::to_string(t.patterns.size() + 1);
+            t.patterns.push_back(std::move(p));
+            t.activePattern = int(t.patterns.size()) - 1;
+        });
+        return true;
+    }
+    if (type == "duplicatePattern") {
+        onTrack([&](Track& t, Song&) {
+            if (t.patterns.empty() || t.patterns.size() >= 16) return;
+            const int i = std::clamp(t.activePattern, 0, int(t.patterns.size()) - 1);
+            Pattern copy = t.patterns[size_t(i)];
+            copy.name = "Pat " + std::to_string(t.patterns.size() + 1);
+            t.patterns.insert(t.patterns.begin() + i + 1, std::move(copy));
+            t.activePattern = i + 1;
+        });
+        return true;
+    }
+    if (type == "removePattern") {
+        const int index = intField(body, "index", -1);
+        onTrack([&](Track& t, Song&) {
+            if (t.patterns.size() <= 1) return;    // a track must have one
+            if (index < 0 || index >= int(t.patterns.size())) return;
+            t.patterns.erase(t.patterns.begin() + index);
+            t.activePattern = std::clamp(t.activePattern, 0, int(t.patterns.size()) - 1);
+        });
+        return true;
+    }
+    if (type == "clearPattern") {
+        onTrack([&](Track& t, Song&) {
+            if (auto* p = t.current()) { for (auto& st : p->steps) st.on = false; p->euclidMode = false; }
+        });
+        return true;
+    }
+
     if (type == "preset") {
         std::string name;
         if (!field(body, "name", name)) { error = "missing name"; return false; }

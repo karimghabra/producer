@@ -35,6 +35,15 @@ let interacting = false;
 const hex = (n) => '#' + (n & 0xffffff).toString(16).padStart(6, '0');
 const pct = (v) => Math.round(v * 100);
 
+// Track names are user-typed and go into innerHTML, so they get escaped. The
+// only place in this interface where text from outside reaches the DOM.
+const esc = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/** Matches the palette the engine hands to new tracks. */
+const TRACK_COLOURS = ['#ff5c7a', '#ffb86b', '#5ee6c5', '#ffd479',
+                       '#c77dff', '#6ba8ff', '#8fe36b', '#ff8fd4'];
+
 // --------------------------------------------------------------------------
 // Knob — drawn on a canvas, because a styled range input always looks like a
 // styled range input. 270 degrees of travel, the way a hardware pot reads.
@@ -130,26 +139,120 @@ function renderTracks() {
       : '';
 
     el.innerHTML =
-      `<div><div class="nm">${t.name}</div>
-       <div class="sub">${t.engine}${pat ? ' - ' + pat.name : ''}</div>
+      `<div><div class="nm" data-name="${i}" title="Double-click to rename">${esc(t.name)}</div>
+       <div class="sub">${esc(t.engine)}${pat ? ' - ' + esc(pat.name) : ''}</div>
        <div class="lights">${lights}</div></div>
        <div class="badges">
-         <button class="badge ${t.mixer.solo ? 'on-s' : ''}" data-solo="${i}">S</button>
-         <button class="badge ${t.mixer.mute ? 'on-m' : ''}" data-mute="${i}">M</button>
+         <button class="badge ${t.seqEnabled ? '' : 'off'}" data-seq="${i}"
+                 title="${t.seqEnabled ? 'Sequencer on' : 'Sequencer off'}">&#9654;</button>
+         <button class="badge ${t.mixer.solo ? 'on-s' : ''}" data-solo="${i}" title="Solo">S</button>
+         <button class="badge ${t.mixer.mute ? 'on-m' : ''}" data-mute="${i}" title="Mute">M</button>
+         <button class="badge more" data-more="${i}" title="Track options">&#8943;</button>
        </div>`;
 
     el.addEventListener('click', (e) => {
-      if (e.target.dataset.solo !== undefined) {
-        api.send('solo', { track: i, value: t.mixer.solo ? 0 : 1 });
-      } else if (e.target.dataset.mute !== undefined) {
-        api.send('mute', { track: i, value: t.mixer.mute ? 0 : 1 });
-      } else {
-        selected = i;
-        api.send('selectTrack', { track: i });
-      }
+      const d = e.target.dataset;
+      if (d.solo !== undefined)      api.send('solo', { track: i, value: t.mixer.solo ? 0 : 1 });
+      else if (d.mute !== undefined) api.send('mute', { track: i, value: t.mixer.mute ? 0 : 1 });
+      else if (d.seq !== undefined)  api.send('seqEnabled', { track: i, value: t.seqEnabled ? 0 : 1 });
+      else if (d.more !== undefined) openTrackMenu(i, e.target);
+      else { selected = i; api.send('selectTrack', { track: i }); }
+    });
+
+    // Rename in place. A dialog for one short string would be heavier than the
+    // thing it edits.
+    el.querySelector('[data-name]').addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      const cell = e.target;
+      cell.contentEditable = 'true';
+      cell.classList.add('editing');
+      interacting = true;
+      cell.focus();
+      getSelection().selectAllChildren(cell);
+
+      const commit = (keep) => {
+        cell.contentEditable = 'false';
+        cell.classList.remove('editing');
+        interacting = false;
+        const name = cell.textContent.trim().slice(0, 24);
+        if (keep && name && name !== t.name) api.send('renameTrack', { track: i, name });
+        else cell.textContent = t.name;
+      };
+      cell.onblur = () => commit(true);
+      cell.onkeydown = (ev) => {
+        ev.stopPropagation();                       // or A-K would play notes
+        if (ev.key === 'Enter') { ev.preventDefault(); cell.blur(); }
+        if (ev.key === 'Escape') { commit(false); cell.blur(); }
+      };
     });
     host.append(el);
   });
+}
+
+/** Track options, anchored to the button that opened them. */
+function openTrackMenu(index, anchor) {
+  closeMenu();
+  const t = state.tracks[index];
+  const menu = document.createElement('div');
+  menu.className = 'menu';
+  menu.id = 'track-menu';
+
+  const items = [
+    ['Duplicate', () => api.send('duplicateTrack', { track: index })],
+    ['Move up', () => api.send('moveTrack', { track: index, to: index - 1 }), index > 0],
+    ['Move down', () => api.send('moveTrack', { track: index, to: index + 1 }),
+     index < state.tracks.length - 1],
+    ['Clear pattern', () => api.send('clearPattern', { track: index })],
+    [state.sidechainSource === index ? 'Not the sidechain' : 'Sidechain source',
+     () => api.send('sidechainSource', { track: state.sidechainSource === index ? -1 : index })],
+    ['Delete', () => api.send('removeTrack', { track: index }), state.tracks.length > 1, 'danger'],
+  ];
+
+  for (const [label, action, enabled = true, cls = ''] of items) {
+    const b = document.createElement('button');
+    b.className = 'menu-item ' + cls;
+    b.textContent = label;
+    b.disabled = !enabled;
+    b.onclick = () => { action(); closeMenu(); };
+    menu.append(b);
+  }
+
+  const swatches = document.createElement('div');
+  swatches.className = 'menu-colours';
+  for (const c of TRACK_COLOURS) {
+    const b = document.createElement('button');
+    b.className = 'swatch' + (hex(t.colour) === c ? ' on' : '');
+    b.style.background = c;
+    b.onclick = () => { api.send('trackColour', { track: index, colour: parseInt(c.slice(1), 16) }); closeMenu(); };
+    swatches.append(b);
+  }
+  menu.append(swatches);
+
+  document.body.append(menu);
+  const box = anchor.getBoundingClientRect();
+  // Flip upward when there is not room below, so the last track's menu is not
+  // half off the bottom of the window.
+  const below = innerHeight - box.bottom;
+  menu.style.left = Math.min(box.left, innerWidth - menu.offsetWidth - 8) + 'px';
+  menu.style.top = (below > menu.offsetHeight + 8 ? box.bottom + 4
+                                                  : box.top - menu.offsetHeight - 4) + 'px';
+  setTimeout(() => addEventListener('pointerdown', dismissMenu), 0);
+}
+
+/**
+ * Close on a press outside the menu.
+ *
+ * The check matters: a bare pointerdown listener tore the menu out from under
+ * the press that was choosing an item, so the click never landed and none of
+ * the options did anything.
+ */
+function dismissMenu(e) {
+  if (!e.target.closest('#track-menu')) closeMenu();
+}
+
+function closeMenu() {
+  removeEventListener('pointerdown', dismissMenu);
+  document.getElementById('track-menu')?.remove();
 }
 
 function renderSteps() {
@@ -165,8 +268,26 @@ function renderSteps() {
     b.className = 'chip' + (i === track.activePattern ? ' on' : '');
     b.textContent = p.name;
     b.onclick = () => api.send('selectPattern', { track: selected, index: i });
+    // Right-click removes it. A delete button on every chip would crowd out
+    // the names, which are the thing you are actually reading.
+    b.oncontextmenu = (e) => {
+      e.preventDefault();
+      if (track.patterns.length > 1) api.send('removePattern', { track: selected, index: i });
+    };
+    b.title = 'Right-click to delete';
     bar.append(b);
   });
+  const add = document.createElement('button');
+  add.className = 'chip ghost';
+  add.textContent = '+';
+  add.title = 'New empty pattern';
+  add.onclick = () => api.send('addPattern', { track: selected });
+  const dup = document.createElement('button');
+  dup.className = 'chip ghost';
+  dup.textContent = '⧉';
+  dup.title = 'Duplicate this pattern';
+  dup.onclick = () => api.send('duplicatePattern', { track: selected });
+  bar.append(add, dup);
 
   const host = $('#steps');
   host.style.gridTemplateColumns = `repeat(${Math.min(pat.length, 16)},1fr)`;
@@ -411,7 +532,8 @@ function renderKeys() {
 function shapeKey() {
   return [
     view, selected, state.tracks.length, state.take?.rev ?? -1,
-    state.tracks.map((t) => `${t.name}|${t.engine}|${t.activePattern}|${t.patterns.length}`).join(','),
+    state.tracks.map((t) =>
+      `${t.name}|${t.engine}|${t.colour}|${t.seqEnabled}|${t.activePattern}|${t.patterns.length}`).join(','),
     state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.length,
     state.tracks.map((t) => (t.mixer.mute ? 'm' : '') + (t.mixer.solo ? 's' : '')).join(''),
     state.tracks[selected]?.patterns[state.tracks[selected].activePattern]
@@ -476,6 +598,8 @@ function render() {
 
 $('#play').onclick = () => api.send(state && state.playing ? 'stop' : 'play');
 $('#rec').onclick = () => api.send('record');
+$('#add-drum').onclick = () => api.send('addTrack', { kind: 'drum' });
+$('#add-synth').onclick = () => api.send('addTrack', { kind: 'synth' });
 
 document.querySelectorAll('#views .tab').forEach((tab) => {
   tab.onclick = () => {

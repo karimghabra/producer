@@ -168,6 +168,104 @@ await page.waitForTimeout(350);
 const engineAfter = (await engine()).tracks[4].engine;
 check(true, 'preset click accepted', `${engineBefore} -> ${engineAfter}`);
 
+// --- track manager -----------------------------------------------------------
+await page.locator('[data-view="steps"]').click();
+await page.waitForTimeout(250);
+const startCount = (await engine()).tracks.length;
+
+await page.locator('#add-synth').click();
+await page.waitForTimeout(350);
+let now = await engine();
+check(now.tracks.length === startCount + 1, 'add synth track', `${startCount} -> ${now.tracks.length}`);
+check(now.tracks.at(-1).isDrum === false, 'the added track is a synth', now.tracks.at(-1).engine);
+check(now.tracks.at(-1).armed === true, 'a new track is armed ready to play');
+check(now.tracks.at(-1).patterns[0].steps.every((s) => !s.on),
+      'a new track starts empty rather than copying a default');
+
+await page.locator('#add-drum').click();
+await page.waitForTimeout(350);
+now = await engine();
+check(now.tracks.length === startCount + 2, 'add drum track', `${now.tracks.length} tracks`);
+const colours = new Set(now.tracks.map((t) => t.colour));
+check(colours.size >= Math.min(now.tracks.length, 8), 'added tracks get distinct colours',
+      `${colours.size} colours across ${now.tracks.length} tracks`);
+
+// Rename in place.
+const nameCell = page.locator('.track').nth(startCount).locator('.nm');
+await nameCell.dblclick();
+await page.keyboard.press('Control+A');
+await page.keyboard.type('Acid');
+await page.keyboard.press('Enter');
+await page.waitForTimeout(350);
+check((await engine()).tracks[startCount].name === 'Acid', 'rename a track in place',
+      (await engine()).tracks[startCount].name);
+
+// The options menu.
+await page.locator('.track').nth(startCount).locator('[data-more]').click();
+await page.waitForTimeout(200);
+check(await page.locator('#track-menu').isVisible(), 'track options menu opens');
+const menuFits = await page.evaluate(() => {
+  const m = document.getElementById('track-menu').getBoundingClientRect();
+  return m.right <= innerWidth + 1 && m.bottom <= innerHeight + 1 && m.top >= -1;
+});
+check(menuFits, 'the menu stays inside the window');
+
+await page.locator('#track-menu .menu-item', { hasText: 'Duplicate' }).click();
+await page.waitForTimeout(350);
+now = await engine();
+check(now.tracks.length === startCount + 3 && now.tracks[startCount + 1].name === 'Acid 2',
+      'duplicate a track', now.tracks.map((t) => t.name).join(','));
+
+// Reorder.
+await page.locator('.track').nth(startCount).locator('[data-more]').click();
+await page.waitForTimeout(200);
+await page.locator('#track-menu .menu-item', { hasText: 'Move up' }).click();
+await page.waitForTimeout(350);
+check((await engine()).tracks[startCount - 1].name === 'Acid', 'move a track up the rail',
+      (await engine()).tracks.map((t) => t.name).join(','));
+
+// Patterns.
+await cmd({ type: 'selectTrack', track: 0 });
+await page.waitForTimeout(300);
+const patsBefore = (await engine()).tracks[0].patterns.length;
+await page.locator('#pattern-bar .chip.ghost').first().click();
+await page.waitForTimeout(350);
+check((await engine()).tracks[0].patterns.length === patsBefore + 1, 'add a pattern',
+      `${patsBefore} -> ${(await engine()).tracks[0].patterns.length}`);
+// Not .chip:last - the add and duplicate buttons are chips too.
+await page.locator('#pattern-bar .chip:not(.ghost)').last().click({ button: 'right' });
+await page.waitForTimeout(350);
+const patsAfter = (await engine()).tracks[0].patterns.length;
+check(patsAfter === patsBefore, 'right-click removes a pattern',
+      `${patsBefore + 1} -> ${patsAfter}`);
+
+// Delete, all the way back to where we started.
+for (let i = 0; i < 3; i++) {
+  await page.locator('.track').nth(startCount - 1).locator('[data-more]').click();
+  await page.waitForTimeout(200);
+  await page.locator('#track-menu .menu-item', { hasText: 'Delete' }).click();
+  await page.waitForTimeout(300);
+}
+now = await engine();
+check(now.tracks.length === startCount, 'delete tracks', `back to ${now.tracks.length}`);
+
+// The song must never be left with nothing in it.
+await cmd({ type: 'selectTrack', track: 0 });
+const survivor = now.tracks.length;
+for (let i = 0; i < survivor + 2; i++) await cmd({ type: 'removeTrack', track: 0 });
+await page.waitForTimeout(400);
+const left = (await engine()).tracks.length;
+check(left === 1, 'the last track cannot be deleted', `${survivor} -> ${left}`);
+
+await cmd({ type: 'newSong' });
+await page.waitForTimeout(400);
+now = await engine();
+check(now.tracks.length === startCount &&
+      now.tracks.map((t) => t.name).join(',') === 'Kick,Clap,Hats,Snare,Bass,Lead',
+      'new song restores the starter kit', now.tracks.map((t) => t.name).join(' '));
+await cmd({ type: 'selectTrack', track: 0 });
+await page.waitForTimeout(300);
+
 // --- the signature feature: play, then let it work out what you meant --------
 //
 // Plays a rhythm at a known tempo through the real engine and checks the
