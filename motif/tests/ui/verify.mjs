@@ -144,7 +144,9 @@ await page.waitForTimeout(200);
 // --- mixer -------------------------------------------------------------------
 await page.locator('[data-view="mix"]').click();
 await page.waitForTimeout(400);
-const knobs = await page.locator('.knob canvas').count();
+// Scoped to the mixer: the step detail panel draws knobs too, and they are
+// still in the document while its view is hidden.
+const knobs = await page.locator('#mixer .knob canvas').count();
 check(knobs === 30, 'mix view draws a knob per send', `${knobs} knobs (6 tracks x 5)`);
 
 // Drag a knob and confirm the value reached the engine. Start low so there is
@@ -332,6 +334,99 @@ check(now.tracks.length === startCount &&
       'new song restores the starter kit', now.tracks.map((t) => t.name).join(' '));
 await cmd({ type: 'selectTrack', track: 0 });
 await page.waitForTimeout(300);
+
+// --- step detail -------------------------------------------------------------
+//
+// The engine has always had velocity, ratchet, nudge and trig conditions.
+// These checks are about whether any of it can be reached from the interface.
+await cmd({ type: 'selectTrack', track: 0 });
+await page.locator('[data-view="steps"]').click();
+await page.waitForTimeout(350);
+
+const stepOf = async (n) => (await engine()).tracks[0].patterns[0].steps[n];
+
+// Index 5 is off in four-on-the-floor, so one click turns it on and selects it.
+await page.locator('.step').nth(5).click();
+await page.waitForTimeout(300);
+check(await page.locator('.step.sel').count() === 1, 'clicking a step selects it');
+check((await stepOf(5)).on === true, 'and toggles it in the same click');
+check(await page.locator('#step-detail .sd-title').innerText() === 'STEP 6',
+      'the detail panel follows the selection',
+      await page.locator('#step-detail .sd-title').innerText());
+
+// Ratchet: pick 4 and the engine has to agree.
+await page.locator('#step-detail .sd-group', { hasText: 'RATCHET' })
+  .locator('.chip', { hasText: /^4$/ }).click();
+await page.waitForTimeout(300);
+check((await stepOf(5)).ratchet === 4, 'ratchet reaches the engine',
+      `ratchet ${(await stepOf(5)).ratchet}`);
+check(await page.locator('.step').nth(5).locator('.mk.r').count() === 1,
+      'and shows on the step itself');
+
+// Velocity by drag.
+const velBox = await page.locator('#step-detail .param').first().boundingBox();
+const velBefore = (await stepOf(5)).vel;
+await page.mouse.move(velBox.x + velBox.width / 2, velBox.y + velBox.height / 2);
+await page.mouse.down();
+await page.mouse.move(velBox.x + velBox.width / 2, velBox.y + velBox.height / 2 - 40, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(300);
+check((await stepOf(5)).vel > velBefore + 0.05, 'velocity reaches the engine',
+      `${velBefore.toFixed(2)} -> ${(await stepOf(5)).vel.toFixed(2)}`);
+
+// Trig conditions.
+await page.locator('#step-detail .sd-group', { hasText: 'PLAYS' })
+  .locator('.chip', { hasText: 'Every' }).click();
+await page.waitForTimeout(300);
+check((await stepOf(5)).cond === 2, 'a trig condition can be set',
+      `cond ${(await stepOf(5)).cond}`);
+await page.locator('#step-detail .sd-group', { hasText: 'PLAYS' })
+  .locator('.chip', { hasText: '1:4' }).click();
+await page.waitForTimeout(400);
+const ratio = await stepOf(5);
+check(ratio.hit === 1 && ratio.of === 4, 'and its ratio', `${ratio.hit}:${ratio.of}`);
+await page.locator('#step-detail .sd-group', { hasText: 'PLAYS' })
+  .locator('.chip', { hasText: 'Always' }).click();
+await page.waitForTimeout(250);
+
+// Pattern shape.
+await page.locator('#pattern-shape .stepper', { hasText: 'STEPS' })
+  .locator('button', { hasText: '+' }).click();
+await page.waitForTimeout(300);
+check((await engine()).tracks[0].patterns[0].length === 17, 'pattern length can be changed',
+      `${(await engine()).tracks[0].patterns[0].length} steps`);
+await page.locator('#pattern-shape .stepper', { hasText: 'STEPS' })
+  .locator('button', { hasText: '-' }).click();
+await page.waitForTimeout(300);
+
+// Euclid: 5 pulses over 16 must be the cinquillo-derived spread, not 5 in a row.
+await page.locator('#pattern-shape .chip', { hasText: 'EUCLID' }).click();
+await page.waitForTimeout(350);
+check((await engine()).tracks[0].patterns[0].euclid === true, 'euclid mode turns on');
+for (let n = 0; n < 3; n++) {
+  await page.locator('#pattern-shape .stepper', { hasText: 'PULSES' })
+    .locator('button', { hasText: '+' }).click();
+  await page.waitForTimeout(160);
+}
+const euclidPat = (await engine()).tracks[0].patterns[0];
+const lit2 = euclidPat.steps.filter((s) => s.on).length;
+check(euclidPat.pulses === lit2 && lit2 > 0, 'pulses spread across the pattern',
+      `${euclidPat.pulses} pulses, ${lit2} steps lit`);
+// Evenly: no two gaps between hits may differ by more than one step.
+const hits = euclidPat.steps.map((s, i) => (s.on ? i : -1)).filter((i) => i >= 0);
+const gaps = hits.map((h, i) => (i ? h - hits[i - 1] : h + euclidPat.length - hits.at(-1)));
+check(Math.max(...gaps) - Math.min(...gaps) <= 1, 'and as evenly as they can be',
+      `gaps ${gaps.join(',')}`);
+
+await page.locator('#pattern-shape .chip', { hasText: 'BAKE' }).click();
+await page.waitForTimeout(350);
+const baked = (await engine()).tracks[0].patterns[0];
+check(baked.euclid === false && baked.steps.filter((s) => s.on).length === lit2,
+      'baking keeps the rhythm and hands back the steps',
+      `${baked.steps.filter((s) => s.on).length} steps on, euclid ${baked.euclid}`);
+
+await cmd({ type: 'newSong' });
+await page.waitForTimeout(350);
 
 // --- the playing surface -----------------------------------------------------
 //

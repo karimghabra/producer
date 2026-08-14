@@ -22,6 +22,7 @@ let state = null;
 let presets = { drums: [], synths: [] };
 let view = 'steps';
 let selected = 0;
+let selectedStep = 0;
 const heldKeys = new Set();
 
 // True while a control is being dragged.
@@ -375,6 +376,8 @@ function renderSteps() {
   dup.onclick = () => api.send('duplicatePattern', { track: selected });
   bar.append(add, dup);
 
+  renderPatternShape(track, pat);
+
   const host = $('#steps');
   host.style.gridTemplateColumns = `repeat(${Math.min(pat.length, 16)},1fr)`;
   host.innerHTML = '';
@@ -383,13 +386,216 @@ function renderSteps() {
     el.className = 'step'
       + (s.on ? ' on' : '')
       + (i % pat.resolution === 0 ? ' beat' : '')
+      + (i === selectedStep ? ' sel' : '')
       + (state.playing && i === track.step ? ' here' : '');
     el.style.setProperty('--c', tint);
+
+    // Marks for the things that are set but would otherwise be invisible.
+    const marks = [
+      s.ratchet > 1 ? `<span class="mk r">${s.ratchet}</span>` : '',
+      Math.abs(s.nudge) > 0.001 ? `<span class="mk n${s.nudge < 0 ? ' early' : ''}">${
+        s.nudge < 0 ? '&lsaquo;' : '&rsaquo;'}</span>` : '',
+      s.cond ? `<span class="mk c">${condMark(s)}</span>` : '',
+    ].join('');
+
     el.innerHTML = `<span class="n">${i + 1}</span>`
-      + (s.on ? `<span class="vel" style="height:${pct(s.vel)}%"></span>` : '');
-    el.onclick = () => api.send('toggleStep', { track: selected, step: i });
+      + (s.on ? `<span class="vel" style="height:${pct(s.vel)}%"></span>` : '')
+      + (s.on ? marks : '');
+    // Click toggles and selects. Making the first click only select would mean
+    // two clicks to turn a step on, which is not what a step grid does
+    // anywhere else. The detail panel shows the step either way - an off step
+    // still has properties worth setting before you switch it on.
+    el.onclick = () => {
+      api.send('toggleStep', { track: selected, step: i });
+      selectedStep = i;
+      lastShape = null;                        // the selection is part of it
+      render();
+    };
     host.append(el);
   });
+
+  renderStepDetail(track, pat);
+}
+
+const COND_NAMES = ['Always', 'Chance', 'Every', 'Fill', 'Not fill', 'First', 'Not first'];
+const condMark = (s) => (s.cond === 1 ? pct(s.chance ?? 1) + '%'
+                       : s.cond === 2 ? `${s.hit ?? 1}:${s.of ?? 4}`
+                       : COND_NAMES[s.cond]?.slice(0, 3) ?? '');
+
+/** Pattern length, resolution and the euclidean generator. */
+function renderPatternShape(track, pat) {
+  const host = $('#pattern-shape');
+  host.innerHTML = '';
+
+  const num = (label, value, min, max, onChange, title) => {
+    const w = document.createElement('div');
+    w.className = 'stepper';
+    w.title = title || '';
+    w.innerHTML = `<label>${label}</label>`;
+    const dec = document.createElement('button'); dec.textContent = '-';
+    const out = document.createElement('span'); out.textContent = value;
+    const inc = document.createElement('button'); inc.textContent = '+';
+    dec.onclick = () => onChange(Math.max(min, value - 1));
+    inc.onclick = () => onChange(Math.min(max, value + 1));
+    w.append(dec, out, inc);
+    return w;
+  };
+
+  host.append(
+    num('STEPS', pat.length, 1, 64,
+        (v) => api.send('patternLength', { track: selected, value: v }),
+        'Pattern length. Give two tracks different lengths and they drift '
+        + 'against each other, repeating only when the counts line up again.'),
+    num('PER BEAT', pat.resolution, 1, 8,
+        (v) => api.send('patternResolution', { track: selected, value: v }),
+        'Steps per beat. 4 is sixteenths, 3 is triplets.'),
+  );
+
+  const euclid = document.createElement('button');
+  euclid.className = 'chip small' + (pat.euclid ? ' on' : '');
+  euclid.textContent = 'EUCLID';
+  euclid.title = 'Spread a number of pulses as evenly as possible over the '
+    + 'pattern. Where a great many traditional rhythms come from - and one '
+    + 'number instead of sixteen decisions.';
+  euclid.onclick = () => api.send('euclid', { track: selected, what: 'on', value: pat.euclid ? 0 : 1 });
+  host.append(euclid);
+
+  if (pat.euclid) {
+    host.append(
+      num('PULSES', pat.pulses, 0, pat.length,
+          (v) => api.send('euclid', { track: selected, what: 'pulses', value: v }),
+          'How many hits to spread across the pattern.'),
+      num('ROTATE', pat.rotation, -32, 32,
+          (v) => api.send('euclid', { track: selected, what: 'rotation', value: v }),
+          'Turn the pattern around its circle. Same rhythm, different downbeat.'),
+    );
+    const bake = document.createElement('button');
+    bake.className = 'chip small ghost';
+    bake.textContent = 'BAKE';
+    bake.title = 'Freeze this into ordinary steps so it can be edited by hand.';
+    bake.onclick = () => api.send('euclid', { track: selected, what: 'bake', value: 1 });
+    host.append(bake);
+  }
+
+  const clear = document.createElement('button');
+  clear.className = 'chip small ghost';
+  clear.textContent = 'CLEAR';
+  clear.onclick = () => api.send('clearPattern', { track: selected });
+  host.append(clear);
+}
+
+/** Everything a single step is, for the one that is selected. */
+function renderStepDetail(track, pat) {
+  const host = $('#step-detail');
+  const i = Math.min(selectedStep, pat.length - 1);
+  const s = pat.steps[i];
+  if (!s) { host.innerHTML = ''; return; }
+
+  host.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'sd-head';
+  head.innerHTML = `<span class="sd-title">STEP ${i + 1}</span>`;
+  const onoff = document.createElement('button');
+  onoff.className = 'chip small' + (s.on ? ' on' : '');
+  onoff.textContent = s.on ? 'ON' : 'OFF';
+  onoff.onclick = () => api.send('toggleStep', { track: selected, step: i });
+  head.append(onoff);
+  if (pat.euclid) {
+    const note = document.createElement('span');
+    note.className = 'sd-note';
+    note.textContent = 'Euclid is generating this pattern - BAKE it to edit steps by hand.';
+    head.append(note);
+  }
+  host.append(head);
+
+  const row = document.createElement('div');
+  row.className = 'sd-row';
+  const tint = hex(track.colour);
+  const edit = (what, value) => api.send('stepEdit', { track: selected, step: i, what, value });
+
+  const k = (label, norm, display, onChange, help, bipolar = false) => {
+    const w = knob(label, norm, display, tint, onChange, bipolar);
+    w.classList.add('param');
+    w.title = `${label}\n\n${help}`;
+    return w;
+  };
+
+  row.append(
+    k('VELOCITY', s.vel, pct(s.vel) + '%', (v) => edit('vel', v),
+      'How hard this step is struck. On pitched tracks it also opens the filter '
+      + 'further, the way playing harder does.'),
+    k('NUDGE', (s.nudge + 0.5), (s.nudge > 0 ? '+' : '') + Math.round(s.nudge * 100) + '%',
+      (v) => edit('nudge', v - 0.5),
+      'Move this step off the grid, up to half a step either way. A few percent '
+      + 'late is what makes a part sit back in the groove rather than on top of it.',
+      true),
+    k('LENGTH', (s.len - 1) / 31, s.len + (s.len === 1 ? ' step' : ' steps'),
+      (v) => edit('len', Math.round(1 + v * 31)),
+      'How long the note is held, in steps. Only matters on pitched tracks.'),
+  );
+
+  // Ratchet and degree are small integers, so buttons rather than knobs: you
+  // pick 3 rather than hunt for it.
+  const ratchet = document.createElement('div');
+  ratchet.className = 'sd-group';
+  ratchet.title = 'RATCHET\n\nRetrigger this step several times inside its own '
+    + 'slot. Two is a flam, four is a roll, and it is how a fill gets made '
+    + 'without adding steps.';
+  ratchet.innerHTML = '<label>RATCHET</label>';
+  const rr = document.createElement('div');
+  rr.className = 'choice-row';
+  for (let n = 1; n <= 8; n++) {
+    const b = document.createElement('button');
+    b.className = 'chip tiny' + (s.ratchet === n ? ' on' : '');
+    b.textContent = n;
+    b.onclick = () => edit('ratchet', n);
+    rr.append(b);
+  }
+  ratchet.append(rr);
+
+  const cond = document.createElement('div');
+  cond.className = 'sd-group';
+  cond.title = 'CONDITION\n\nWhen this step is allowed to fire. "Every 1:4" plays '
+    + 'on one pass in four, which is how a single pattern turns into an '
+    + 'arrangement without a timeline.';
+  cond.innerHTML = '<label>PLAYS</label>';
+  const cr = document.createElement('div');
+  cr.className = 'choice-row';
+  COND_NAMES.forEach((name, n) => {
+    const b = document.createElement('button');
+    b.className = 'chip tiny' + (s.cond === n ? ' on' : '');
+    b.textContent = name;
+    b.onclick = () => edit('condType', n);
+    cr.append(b);
+  });
+  cond.append(cr);
+
+  if (s.cond === 1) {
+    const chance = document.createElement('div');
+    chance.className = 'choice-row';
+    [0.1, 0.25, 0.5, 0.75, 0.9].forEach((c) => {
+      const b = document.createElement('button');
+      b.className = 'chip tiny' + (Math.abs((s.chance ?? 1) - c) < 0.01 ? ' on' : '');
+      b.textContent = pct(c) + '%';
+      b.onclick = () => edit('chance', c);
+      chance.append(b);
+    });
+    cond.append(chance);
+  }
+  if (s.cond === 2) {
+    const ratio = document.createElement('div');
+    ratio.className = 'choice-row';
+    [[1, 2], [2, 2], [1, 3], [1, 4], [2, 4], [3, 4], [1, 8]].forEach(([hit, of]) => {
+      const b = document.createElement('button');
+      b.className = 'chip tiny' + ((s.hit ?? 1) === hit && (s.of ?? 4) === of ? ' on' : '');
+      b.textContent = `${hit}:${of}`;
+      b.onclick = async () => { await edit('hit', hit); await edit('of', of); };
+      ratio.append(b);
+    });
+    cond.append(ratio);
+  }
+
+  host.append(row, ratchet, cond);
 }
 
 // --------------------------------------------------------------------------
@@ -898,8 +1104,10 @@ function shapeKey() {
       `${t.name}|${t.engine}|${t.colour}|${t.seqEnabled}|${t.activePattern}|${t.patterns.length}`).join(','),
     state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.length,
     state.tracks.map((t) => (t.mixer.mute ? 'm' : '') + (t.mixer.solo ? 's' : '')).join(''),
-    state.tracks[selected]?.patterns[state.tracks[selected].activePattern]
-      ?.steps.map((s) => (s.on ? 1 : 0)).join(''),
+    selectedStep,
+    // The whole pattern, not just which steps are on: editing a velocity or a
+    // ratchet has to redraw, and those are what the detail panel exists for.
+    JSON.stringify(state.tracks[selected]?.patterns[state.tracks[selected].activePattern]),
   ].join('#');
 }
 

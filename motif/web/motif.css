@@ -172,7 +172,32 @@ section { padding:14px; overflow:auto; min-width:0; }
 /* The steps view fills the stage: bar, grid, then the take panel takes the
    rest. Before this the grid sat at the top and the remaining two thirds of the
    window were empty. */
-#view-steps.on { display:grid; grid-template-rows:auto auto 1fr; height:100%; min-height:0; }
+#view-steps.on { display:grid; grid-template-rows:auto auto auto auto 1fr;
+                 height:100%; min-height:0; }
+
+/* ---------- pattern shape ---------- */
+.shape { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+.stepper { display:flex; align-items:center; gap:5px; }
+.stepper label { font-size:8.5px; letter-spacing:.13em; color:var(--dimmer); }
+.stepper button { width:19px; height:19px; border-radius:5px; background:var(--ink2);
+                  border:1px solid var(--line); color:var(--dim);
+                  font:700 12px var(--sans); line-height:0; }
+.stepper button:hover { border-color:var(--fitted); color:var(--fitted); }
+.stepper span { font:600 11px var(--mono); color:var(--text); min-width:20px; text-align:center; }
+.chip.tiny { padding:4px 8px; font-size:9.5px; }
+
+/* ---------- step detail ---------- */
+.step-detail { margin-top:14px; padding:12px 15px 13px;
+               background:rgba(7,9,16,.5); border:1px solid var(--line-soft);
+               border-radius:10px; }
+.sd-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.sd-title { font:700 9px var(--sans); letter-spacing:.16em; color:var(--dimmer); }
+.sd-note { font-size:10px; color:var(--gold); }
+.sd-row { display:flex; gap:14px; margin-bottom:12px; }
+.sd-group { margin-bottom:9px; }
+.sd-group > label { display:block; font:700 8.5px var(--sans); letter-spacing:.14em;
+                    color:var(--dimmer); margin-bottom:5px; }
+.sd-group .choice-row { margin-bottom:4px; }
 .steps { display:grid; grid-template-columns:repeat(16,1fr); gap:5px; }
 .step {
   position:relative; aspect-ratio:1/1.05; border-radius:6px;
@@ -187,7 +212,14 @@ section { padding:14px; overflow:auto; min-width:0; }
            color:var(--dimmer); }
 .step.on .n { color:rgba(0,0,0,.5); }
 .step.here { box-shadow:0 0 0 2px var(--gold); transform:translateY(-2px); }
+.step.sel { outline:2px solid var(--text); outline-offset:1px; }
 .step:hover { border-color:#3d4b68; }
+
+/* Marks for the properties that would otherwise be invisible on the grid. */
+.step .mk { position:absolute; font:700 8px var(--mono); color:rgba(0,0,0,.62); }
+.step .mk.r { top:3px; right:4px; }
+.step .mk.n { bottom:2px; right:4px; font-size:11px; }
+.step .mk.c { bottom:2px; left:4px; }
 
 /* ---------- take ---------- */
 /* Sits at the bottom of the stage like a hardware panel, so the space between

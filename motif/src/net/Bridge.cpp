@@ -199,6 +199,9 @@ std::string Bridge::stateJson() const {
                   << ",\"nudge\":" << num(st.nudge, 3)
                   << ",\"accent\":" << (st.accent ? "true" : "false")
                   << ",\"cond\":" << int(st.cond.type)
+                  << ",\"chance\":" << num(st.cond.chance, 2)
+                  << ",\"hit\":" << st.cond.hit
+                  << ",\"of\":" << st.cond.of
                   << "}";
             }
             j << "]}";
@@ -470,6 +473,78 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
         });
         return true;
     }
+    // --- step detail ------------------------------------------------------
+    //
+    // One command rather than a dozen. Every one of these is "set a field of a
+    // step to a number", and giving each its own name would be a longer file
+    // saying the same thing.
+    if (type == "stepEdit") {
+        const int index = intField(body, "step", -1);
+        std::string what;
+        if (!field(body, "what", what)) { error = "missing what"; return false; }
+        bool applied = false;
+        onTrack([&](Track& t, Song&) {
+            Pattern* p = t.current();
+            if (!p || index < 0 || index >= int(p->steps.size())) return;
+            Step& s = p->steps[size_t(index)];
+            applied = true;
+            if      (what == "on")      s.on = value > 0.5;
+            else if (what == "vel")     s.velocity = float(std::clamp(value, 0.0, 1.0));
+            else if (what == "deg")     s.degree = std::clamp(intField(body, "value", 0), -14, 14);
+            else if (what == "oct")     s.octave = std::clamp(intField(body, "value", 0), -3, 3);
+            else if (what == "len")     s.length = std::clamp(intField(body, "value", 1), 1, 32);
+            else if (what == "ratchet") s.ratchet = std::clamp(intField(body, "value", 1), 1, 8);
+            else if (what == "nudge")   s.nudge = float(std::clamp(value, -0.5, 0.5));
+            else if (what == "accent")  s.accent = value > 0.5;
+            else if (what == "condType") {
+                s.cond.type = TrigCondition::Type(std::clamp(intField(body, "value", 0), 0, 6));
+            }
+            else if (what == "chance")  s.cond.chance = float(std::clamp(value, 0.0, 1.0));
+            else if (what == "hit")     s.cond.hit = std::clamp(intField(body, "value", 1), 1, 16);
+            else if (what == "of")      s.cond.of = std::clamp(intField(body, "value", 4), 1, 16);
+            else applied = false;
+        });
+        if (!applied) { error = "cannot set " + what; return false; }
+        return true;
+    }
+
+    if (type == "patternLength") {
+        onTrack([&](Track& t, Song&) {
+            if (auto* p = t.current()) p->resize(std::clamp(intField(body, "value", 16), 1, 64));
+        });
+        return true;
+    }
+    if (type == "patternResolution") {
+        onTrack([&](Track& t, Song&) {
+            if (auto* p = t.current()) p->resolution = std::clamp(intField(body, "value", 4), 1, 8);
+        });
+        return true;
+    }
+
+    // Euclidean generation. Spreading n pulses as evenly as possible over m
+    // steps is where a great many traditional rhythms come from, and it is one
+    // number rather than sixteen decisions.
+    if (type == "euclid") {
+        std::string what;
+        field(body, "what", what);
+        onTrack([&](Track& t, Song&) {
+            Pattern* p = t.current();
+            if (!p) return;
+            if      (what == "on")       p->euclidMode = value > 0.5;
+            else if (what == "pulses")   p->euclidPulses = std::clamp(intField(body, "value", 4), 0, p->length);
+            else if (what == "rotation") p->euclidRotation = intField(body, "value", 0);
+            else if (what == "invert")   p->euclidInvert = value > 0.5;
+            else if (what == "bake") {
+                // Freeze the generated pattern into ordinary steps, so it can
+                // be edited by hand from there. Generating is a starting point,
+                // not a mode you have to stay in.
+                for (int i = 0; i < p->length; ++i) p->steps[size_t(i)].on = p->stepOn(i);
+                p->euclidMode = false;
+            }
+        });
+        return true;
+    }
+
     if (type == "selectPattern") {
         const int index = intField(body, "index", 0);
         onTrack([&](Track& t, Song&) { t.activePattern = std::clamp(index, 0, int(t.patterns.size()) - 1); });
