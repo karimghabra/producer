@@ -20,8 +20,11 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+
+#include "music/Quantizer.h"
 
 namespace httplib { class Server; }
 
@@ -49,13 +52,41 @@ public:
 
 private:
     std::string stateJson() const;
+    /** Note-level detail of the last take: played against fitted. */
+    std::string takeJson() const;
     bool applyCommand(const std::string& body, std::string& error);
+
+    /**
+     * Stop recording, fit what was played, and install it on the armed track.
+     *
+     * Kept here rather than in the engine because it spans both: the engine
+     * owns the captured notes, the song owns where they land, and the decision
+     * to adopt the performance's tempo is a musical one rather than an audio
+     * one.
+     */
+    void commitTake();
+
+    /** Re-fit the take already captured, at the current options. */
+    void refitTake();
+
+    /** Replace the last installed take pattern with `take`. */
+    void installTake(const Take& take, bool adoptTempo);
 
     Engine& engine_;
     std::unique_ptr<httplib::Server> server_;
     std::thread thread_;
     std::atomic<bool> running_{ false };
     int port_ = 0;
+
+    // The last take, so the interface can show what was inferred and the fit
+    // can be redone at a different strength without playing it again.
+    mutable std::mutex takeMutex_;
+    Take take_;
+    FitOptions fitOptions_;
+    int takeTrack_ = -1;
+    int takePattern_ = -1;
+    /** Bumped on every fit, so the interface knows when to fetch the detail. */
+    int takeRev_ = 0;
 };
 
 } // namespace motif

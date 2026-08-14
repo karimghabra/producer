@@ -8,6 +8,7 @@ const $ = (s) => document.querySelector(s);
 const api = {
   async state() { return (await fetch('/api/state')).json(); },
   async presets() { return (await fetch('/api/presets')).json(); },
+  async take() { return (await fetch('/api/take')).json(); },
   send(type, extra = {}) {
     return fetch('/api/command', {
       method: 'POST',
@@ -184,6 +185,154 @@ function renderSteps() {
   });
 }
 
+// --------------------------------------------------------------------------
+// Take panel
+//
+// The one place the app explains itself. It shows the grid it inferred, and
+// draws every note twice: amber where your hands put it, mint where the fit
+// put it, joined by the distance between them. If the fitting is wrong you can
+// see that it is wrong, which is the difference between a tool you can trust
+// and one that just moves your notes when you are not looking.
+// --------------------------------------------------------------------------
+
+let takeDetail = null;      // note-level data, fetched only when the fit changes
+let takeRev = -1;
+
+const SUBDIVISION_NAMES = {
+  1: 'quarters', 2: 'eighths', 3: 'eighth triplets',
+  4: 'sixteenths', 6: 'sixteenth triplets', 8: 'thirty-seconds',
+};
+
+async function syncTake() {
+  const t = state && state.take;
+  if (!t || !t.notes) { takeDetail = null; takeRev = -1; return; }
+  if (t.rev === takeRev) return;
+  takeRev = t.rev;
+  takeDetail = await api.take();
+  drawTake();
+}
+
+function renderTake() {
+  const panel = $('#take');
+  const t = (state && state.take) || { notes: 0 };
+  panel.classList.toggle('has-take', t.notes > 0);
+  if (!t.notes) { $('#take-stats').innerHTML = ''; return; }
+
+  // Confidence is the resultant length of the onset phases: how tightly the
+  // playing actually clustered on the grid. Below about a third it is barely a
+  // grid at all, and saying so is more useful than hiding it.
+  const conf = t.confidence || 0;
+  const confClass = conf > 0.6 ? 'mint' : conf > 0.33 ? '' : 'warn';
+  const stat = (label, value, cls = '') =>
+    `<div><label>${label}</label><b class="${cls}">${value}</b></div>`;
+
+  $('#take-stats').innerHTML =
+      stat('HEARD', t.bpm.toFixed(1) + ' BPM', t.fellBack ? 'warn' : 'mint')
+    + stat('GRID', SUBDIVISION_NAMES[t.subdivision] || t.subdivision + '/beat')
+    + stat('LENGTH', t.bars + (t.bars === 1 ? ' bar' : ' bars'))
+    + stat('SHUFFLE', t.swing < 0.04 ? 'straight' : pct(t.swing) + '%')
+    + stat('CONFIDENCE', pct(conf) + '%', confClass)
+    + stat('MOVED', t.movedMs.toFixed(0) + ' ms')
+    + stat('NOTES', t.notes);
+
+  const controls = $('#take-controls');
+  if (controls.dataset.built !== '1') {
+    controls.dataset.built = '1';
+    controls.innerHTML =
+      `<div class="slider"><label>FIT STRENGTH</label>
+         <input type="range" id="fit-strength" min="0" max="100" step="1">
+         <output id="fit-strength-out"></output></div>
+       <button class="toggle" id="keep-swing"><i></i><label>KEEP SHUFFLE</label></button>`;
+
+    const slider = $('#fit-strength');
+    // Hold the structure still for the whole gesture, and refit continuously so
+    // you hear the take slide between where you played it and where the grid
+    // says it goes.
+    slider.addEventListener('pointerdown', () => { interacting = true; });
+    const release = () => { interacting = false; };
+    slider.addEventListener('pointerup', release);
+    slider.addEventListener('pointercancel', release);
+    slider.addEventListener('blur', release);
+    slider.addEventListener('input', () => {
+      $('#fit-strength-out').textContent = slider.value + '%';
+      api.send('fitStrength', { value: slider.value / 100 });
+    });
+    $('#keep-swing').onclick = () =>
+      api.send('fitSwing', { value: state.take.keepSwing ? 0 : 1 });
+  }
+
+  if (!interacting) {
+    $('#fit-strength').value = Math.round((t.strength ?? 1) * 100);
+    $('#fit-strength-out').textContent = pct(t.strength ?? 1) + '%';
+  }
+  $('#keep-swing').classList.toggle('on', !!t.keepSwing);
+}
+
+function drawTake() {
+  const c = $('#take-canvas');
+  if (!takeDetail || !takeDetail.notes.length) return;
+  const box = c.getBoundingClientRect();
+  if (box.width < 10 || box.height < 10) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  c.width = box.width * dpr; c.height = box.height * dpr;
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = box.width, H = box.height;
+  g.clearRect(0, 0, W, H);
+
+  const notes = takeDetail.notes;
+  const loop = Math.max(takeDetail.loopBeats, 0.001);
+  const pad = 16;
+  const x = (beats) => pad + (beats / loop) * (W - pad * 2);
+
+  // Grid lines at the inferred subdivision, so the fitted notes can be seen
+  // sitting on something rather than floating.
+  const t = state.take;
+  const steps = Math.max(1, Math.round(loop * (t.subdivision || 4)));
+  for (let i = 0; i <= steps; i++) {
+    const onBeat = i % (t.subdivision || 4) === 0;
+    const onBar = i % ((t.subdivision || 4) * (state.beatsPerBar || 4)) === 0;
+    g.strokeStyle = onBar ? '#33405a' : onBeat ? '#222b3d' : '#171e2c';
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(Math.round(x(i / (t.subdivision || 4))) + 0.5, 8);
+    g.lineTo(Math.round(x(i / (t.subdivision || 4))) + 0.5, H - 8);
+    g.stroke();
+  }
+
+  const lo = Math.min(...notes.map((n) => n.pitch));
+  const hi = Math.max(...notes.map((n) => n.pitch));
+  const span = Math.max(hi - lo, 6);
+  const top = 18, bottom = H - 18;
+  const y = (pitch) => bottom - ((pitch - lo) / span) * (bottom - top);
+
+  for (const n of notes) {
+    const px = x(((n.played % loop) + loop) % loop);
+    const fx = x(n.fitted);
+    const py = y(n.pitch);
+
+    // The correction itself: how far this note travelled.
+    if (Math.abs(fx - px) > 0.7) {
+      g.strokeStyle = 'rgba(255,184,107,.32)';
+      g.lineWidth = 1;
+      g.beginPath(); g.moveTo(px, py); g.lineTo(fx, py); g.stroke();
+    }
+
+    g.fillStyle = 'rgba(255,184,107,.55)';       // played
+    g.beginPath(); g.arc(px, py, 2.6, 0, Math.PI * 2); g.fill();
+
+    g.fillStyle = '#5ee6c5';                      // fitted
+    g.beginPath(); g.arc(fx, py, 3.4, 0, Math.PI * 2); g.fill();
+  }
+
+  g.font = '600 8.5px ui-monospace,Consolas,monospace';
+  g.fillStyle = 'rgba(255,184,107,.7)';
+  g.fillText('PLAYED', pad, 12);
+  g.fillStyle = '#5ee6c5';
+  g.fillText('FITTED', pad + 48, 12);
+}
+
 function renderMix() {
   const host = $('#mixer');
   host.innerHTML = '';
@@ -261,7 +410,7 @@ function renderKeys() {
  */
 function shapeKey() {
   return [
-    view, selected, state.tracks.length,
+    view, selected, state.tracks.length, state.take?.rev ?? -1,
     state.tracks.map((t) => `${t.name}|${t.engine}|${t.activePattern}|${t.patterns.length}`).join(','),
     state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.length,
     state.tracks.map((t) => (t.mixer.mute ? 'm' : '') + (t.mixer.solo ? 's' : '')).join(''),
@@ -298,6 +447,13 @@ function render() {
   $('#r-peak').textContent = pct(state.peak) + '%';
   $('#play').classList.toggle('on', state.playing);
   $('#rec').classList.toggle('on', state.recording);
+  $('#rec').textContent = state.recording ? 'FIT IT' : 'RECORD';
+
+  // The stats are values, not structure, so they keep updating during a drag -
+  // which is the whole point of the strength slider: you watch the correction
+  // shrink as you pull it back.
+  if (view === 'steps') renderTake();
+  syncTake();
 
   // Never restructure under a finger that is mid-gesture.
   if (interacting) return;
@@ -327,6 +483,9 @@ document.querySelectorAll('#views .tab').forEach((tab) => {
     document.querySelectorAll('#views .tab').forEach((t) => t.classList.toggle('on', t === tab));
     document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === 'view-' + view));
     render();
+    // The canvas had no size while its view was hidden, so anything drawn then
+    // was drawn into nothing.
+    if (view === 'steps') drawTake();
   };
 });
 
@@ -351,6 +510,10 @@ addEventListener('keyup', (e) => {
     renderKeys();
   }
 });
+// The take plot is drawn at device pixels for a specific size, so it has to be
+// redrawn whenever that size changes - including when the window is resized.
+addEventListener('resize', () => { if (view === 'steps') drawTake(); });
+
 // A held note must end when focus goes, or it sustains forever.
 addEventListener('blur', () => {
   heldKeys.forEach((k) => {

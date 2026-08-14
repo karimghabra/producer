@@ -5,8 +5,12 @@
 #include <cmath>
 #include <sstream>
 
+#include <algorithm>
+#include <mutex>
+
 #include "audio/Engine.h"
 #include "music/Presets.h"
+#include "music/Song.h"
 
 namespace motif {
 namespace {
@@ -167,6 +171,151 @@ std::string Bridge::stateJson() const {
         }
         j << "]}";
     }
+    j << "]";
+
+    // What the fitter concluded from the last take.
+    //
+    // Sent so the interface can show its reasoning rather than silently moving
+    // the notes: the tempo it heard, the subdivision it decided you were
+    // playing in, how much shuffle was in your hands, and how tightly the
+    // playing actually clustered on that grid. Low confidence is worth seeing -
+    // it means the grid is a guess.
+    {
+        std::lock_guard<std::mutex> lock(takeMutex_);
+        j << ",\"take\":{\"notes\":" << take_.fitted.size()
+          << ",\"rev\":" << takeRev_
+          << ",\"strength\":" << num(fitOptions_.strength, 2)
+          << ",\"keepSwing\":" << (fitOptions_.keepSwing ? "true" : "false");
+        if (!take_.fitted.empty()) {
+            // Mean absolute correction, in milliseconds: how far the fit had to
+            // move the performance to make it line up.
+            double moved = 0.0;
+            for (const auto& n : take_.fitted) moved += std::abs(n.movedBeats);
+            moved = moved / double(take_.fitted.size()) * 60000.0 / std::max(1.0, take_.fit.bpm);
+
+            j << ",\"bpm\":" << num(take_.fit.bpm, 1)
+              << ",\"subdivision\":" << take_.fit.subdivision
+              << ",\"bars\":" << take_.fit.bars
+              << ",\"confidence\":" << num(take_.fit.confidence, 3)
+              << ",\"swing\":" << num(take_.fit.swing, 3)
+              << ",\"fellBack\":" << (take_.fit.fellBack ? "true" : "false")
+              << ",\"movedMs\":" << num(moved, 1);
+        }
+        j << "}";
+    }
+
+    j << "}";
+    return j.str();
+}
+
+void Bridge::commitTake() {
+    FitOptions opts;
+    { std::lock_guard<std::mutex> lock(takeMutex_); opts = fitOptions_; }
+
+    // Fit against the tempo already set, unless the session has not really
+    // started. Playing over a running loop means the loop is the reference; the
+    // performance should join it rather than redefine it.
+    const Song current = engine_.song();
+    const bool overExisting = engine_.playing();
+    if (overExisting) opts.lockedBpm = current.bpm;
+    opts.bpmPrior = current.bpm;
+    opts.beatsPerBar = current.beatsPerBar;
+
+    Take take = engine_.finishRecording(opts);
+
+    {
+        std::lock_guard<std::mutex> lock(takeMutex_);
+        take_ = take;
+        fitOptions_ = opts;
+        takeTrack_ = takePattern_ = -1;
+        ++takeRev_;
+    }
+    if (take.fitted.empty()) return;
+
+    // Only take the tempo from the performance when it was confidently the
+    // thing setting it. A scattered take would otherwise drag the whole song
+    // to whatever the search happened to land on.
+    installTake(take, !overExisting && take.fit.confidence > 0.5);
+    engine_.setPlaying(true);
+}
+
+void Bridge::installTake(const Take& take, bool adoptTempo) {
+    int armed = -1;
+    const Song snapshot = engine_.song();
+    for (size_t i = 0; i < snapshot.tracks.size(); ++i)
+        if (snapshot.tracks[i].armed) { armed = int(i); break; }
+    if (armed < 0) armed = 0;
+
+    int patternIndex = -1;
+    engine_.editSong([&](Song& s) {
+        if (armed >= int(s.tracks.size())) return;
+        Track& t = s.tracks[size_t(armed)];
+        Pattern p = patternFromTake(take, s.key, !t.instrument.isDrum);
+        p.name = "Take";
+        t.patterns.push_back(std::move(p));
+        patternIndex = int(t.patterns.size()) - 1;
+        t.activePattern = patternIndex;
+        t.seqEnabled = true;
+        if (adoptTempo) { s.bpm = take.fit.bpm; s.barsPerLoop = take.fit.bars; }
+    });
+
+    std::lock_guard<std::mutex> lock(takeMutex_);
+    takeTrack_ = armed;
+    takePattern_ = patternIndex;
+}
+
+void Bridge::refitTake() {
+    std::vector<RawNote> raw;
+    FitOptions opts;
+    int track, pattern;
+    {
+        std::lock_guard<std::mutex> lock(takeMutex_);
+        raw = take_.raw;
+        opts = fitOptions_;
+        track = takeTrack_;
+        pattern = takePattern_;
+    }
+    if (raw.empty()) return;
+
+    Take refitted = fitTake(raw, opts);
+    { std::lock_guard<std::mutex> lock(takeMutex_); take_ = refitted; ++takeRev_; }
+    if (track < 0 || pattern < 0) return;
+
+    // Replace in place rather than appending, so dragging the strength slider
+    // does not leave a trail of patterns behind it.
+    engine_.editSong([&](Song& s) {
+        if (track >= int(s.tracks.size())) return;
+        Track& t = s.tracks[size_t(track)];
+        if (pattern >= int(t.patterns.size())) return;
+        Pattern p = patternFromTake(refitted, s.key, !t.instrument.isDrum);
+        p.name = "Take";
+        t.patterns[size_t(pattern)] = std::move(p);
+    });
+}
+
+std::string Bridge::takeJson() const {
+    std::lock_guard<std::mutex> lock(takeMutex_);
+    std::ostringstream j;
+    j << "{\"rev\":" << takeRev_
+      << ",\"loopBeats\":" << num(take_.beatsPerLoop(), 3)
+      << ",\"notes\":[";
+
+    // Both positions for every note, in beats: where it was played and where
+    // the fit put it. Same order, same length - applyFit never reorders or
+    // drops, which is what makes drawing one against the other meaningful.
+    const double secToBeats = std::max(1.0, take_.fit.bpm) / 60.0;
+    for (size_t i = 0; i < take_.fitted.size(); ++i) {
+        const auto& f = take_.fitted[i];
+        if (i) j << ',';
+        const double playedBeats = i < take_.raw.size()
+            ? (take_.raw[i].startSec - take_.fit.phaseSec) * secToBeats
+            : f.startBeats;
+        j << "{\"played\":" << num(playedBeats, 4)
+          << ",\"fitted\":" << num(f.startBeats, 4)
+          << ",\"len\":" << num(f.lengthBeats, 3)
+          << ",\"pitch\":" << f.pitch
+          << ",\"vel\":" << num(f.velocity, 3) << "}";
+    }
     j << "]}";
     return j.str();
 }
@@ -186,7 +335,37 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
 
     if (type == "play")      { engine_.setPlaying(true);  return true; }
     if (type == "stop")      { engine_.setPlaying(false); return true; }
-    if (type == "record")    { engine_.armRecording();    return true; }
+
+    // One button, two meanings: arm, then commit. Pressing record a second time
+    // is what ends the take, and ending the take is what fits it.
+    if (type == "record") {
+        if (engine_.recording()) commitTake();
+        else                     engine_.armRecording();
+        return true;
+    }
+
+    // Re-fit without replaying. The take is kept raw, so strength can be pulled
+    // back to hear the performance between where it was played and where the
+    // grid says it belongs.
+    if (type == "fitStrength") {
+        { std::lock_guard<std::mutex> lock(takeMutex_);
+          fitOptions_.strength = std::clamp(value, 0.0, 1.0); }
+        refitTake();
+        return true;
+    }
+    if (type == "fitSwing") {
+        { std::lock_guard<std::mutex> lock(takeMutex_);
+          fitOptions_.keepSwing = value > 0.5; }
+        refitTake();
+        return true;
+    }
+    if (type == "clearTake") {
+        std::lock_guard<std::mutex> lock(takeMutex_);
+        take_ = {};
+        takeTrack_ = takePattern_ = -1;
+        return true;
+    }
+
     if (type == "noteOn")    { engine_.noteOn(intField(body, "note", 60), float(numField(body, "velocity", 0.85))); return true; }
     if (type == "noteOff")   { engine_.noteOff(intField(body, "note", 60)); return true; }
     if (type == "audition")  { engine_.auditionTrack(track, intField(body, "note", 60), 0.95f); return true; }
@@ -253,8 +432,26 @@ int Bridge::start(const std::string& webRoot, int preferredPort) {
 
     server_->set_mount_point("/", webRoot);
 
+    // Never let the interface be cached.
+    //
+    // It is served from disk so it can be edited and reloaded without
+    // rebuilding the engine, and a cached stylesheet quietly defeats that: the
+    // app keeps showing the previous version and the edit looks like it did
+    // nothing. Nothing here travels further than loopback, so there is no cost.
+    server_->set_post_routing_handler(
+        [](const httplib::Request&, httplib::Response& res) {
+            res.set_header("Cache-Control", "no-store, must-revalidate");
+        });
+
     server_->Get("/api/state", [this](const httplib::Request&, httplib::Response& res) {
         res.set_content(stateJson(), "application/json");
+    });
+
+    // Note-level detail of the last take, so the interface can draw where each
+    // note was played against where it landed. Kept off /api/state because that
+    // is polled twenty times a second and this changes only when you record.
+    server_->Get("/api/take", [this](const httplib::Request&, httplib::Response& res) {
+        res.set_content(takeJson(), "application/json");
     });
 
     server_->Get("/api/presets", [](const httplib::Request&, httplib::Response& res) {

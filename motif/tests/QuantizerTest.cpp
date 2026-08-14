@@ -93,6 +93,29 @@ int main() {
               "sixteenths read as straight", "subdiv " + std::to_string(f.subdivision));
     }
     {
+        // Eighths land on the sixteenth grid too, so the onsets score the two
+        // readings identically and only occupancy can tell them apart: half the
+        // sixteenth slots are never touched. Before this was checked, playing
+        // deliberate eighth notes was reported back as "sixteenths".
+        const auto eighths = perform(128.0, 2, 2, 4, 6.0, 0.0, 0.0, 0.09, 23);
+        const auto f = inferGrid(eighths);
+        check(f.subdivision == 2, "eighths are not called sixteenths",
+              "subdiv " + std::to_string(f.subdivision));
+        check(pctErr(f.bpm, 128.0) < 2.0, "and the tempo still comes back",
+              std::to_string(f.bpm).substr(0, 6));
+    }
+    {
+        // The same playing with an off-beat in it must stay on the fine grid -
+        // one note on an odd step is proof the player meant sixteenths.
+        auto withOffbeat = perform(128.0, 2, 2, 4, 6.0, 0.0, 0.0, 0.09, 23);
+        RawNote extra = withOffbeat.front();
+        extra.startSec += 60.0 / 128.0 / 4.0;          // a single sixteenth off
+        withOffbeat.push_back(extra);
+        const auto f = inferGrid(withOffbeat);
+        check(f.subdivision == 4, "one off-beat note keeps the finer grid",
+              "subdiv " + std::to_string(f.subdivision));
+    }
+    {
         // Triplets at B and sixteenths at 3B/4 produce identical onset times.
         // Nothing in the performance distinguishes them, so what is actually
         // required is that the grid SPACING is right — the notes land where

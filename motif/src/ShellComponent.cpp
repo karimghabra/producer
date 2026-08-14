@@ -2,20 +2,14 @@
 
 #include "music/Song.h"
 
-namespace motif {
+#if JUCE_WINDOWS
+ #include <windows.h>
+#endif
 
-namespace {
-/** Startup log beside the executable, so a failure to appear can be read. */
-void logLine(const juce::String& text) {
-    auto file = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-                    .getSiblingFile("motif-startup.log");
-    file.appendText(juce::Time::getCurrentTime().toString(true, true) + "  " + text + "\n");
-}
-} // namespace
+namespace motif {
 
 ShellComponent::ShellComponent() {
     setSize(1280, 820);
-    logLine("shell starting");
 
     engine_.setSong(makeDefaultSong());
 
@@ -26,59 +20,24 @@ ShellComponent::ShellComponent() {
     // looks like it has failed to start for the whole of it. The engine renders
     // silence until the device arrives, so there is nothing to wait for.
     const auto root = findWebRoot();
-    logLine("web root: " + (root.exists() ? root.getFullPathName() : juce::String("NOT FOUND")));
     if (!root.exists()) {
         failure_ = "Could not find the web/ directory next to the executable.";
         return;
     }
 
     bridgePort_ = bridge_.start(root.getFullPathName().toStdString(), 7777);
-    logLine("bridge port: " + juce::String(bridgePort_));
     if (bridgePort_ <= 0) {
         failure_ = "Could not bind a local port for the interface.";
         return;
     }
 
-    // Keep the profile out of the roaming user directory so the app stays
-    // self-contained. Created up front: WebView2 will not start if the folder
-    // it is handed does not already exist.
-    const auto dataDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                             .getChildFile("MotifWebView");
-    dataDir.createDirectory();
-
-    const auto options =
-        juce::WebBrowserComponent::Options{}
-            .withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
-            .withWinWebView2Options(
-                juce::WebBrowserComponent::Options::WinWebView2{}
-                    .withUserDataFolder(dataDir)
-                    .withBackgroundColour(juce::Colour(0xff070910))
-                    // Without this the component throws instead of falling back
-                    // when the runtime is missing, which takes the app with it.
-                    .withStatusBarDisabled());
-
     url_ = "http://127.0.0.1:" + juce::String(bridgePort_) + "/";
 
-    // TODO: embed the interface with WebView2 so this is a single window.
-    //
-    // Constructing juce::WebBrowserComponent with the webview2 backend takes
-    // the process down with an access violation - not a C++ exception, so a
-    // try/catch around it catches nothing. The runtime is installed and does
-    // start (it spawns its helper processes), so the fault is in the handover,
-    // most likely the options struct or the environment being created before
-    // the component has a native peer to attach to.
-    //
-    // Until that is understood the interface opens in the default browser. The
-    // engine, the bridge and the interface itself are unaffected; only where
-    // the pixels land changes.
-    juce::ignoreUnused(options);
-    logLine("opening interface at " + url_);
-    juce::URL(url_).launchInDefaultBrowser();
-
-    // Now the slow part, once there is a window to look at while it happens.
-    juce::MessageManager::callAsync([this] {
-        setAudioChannels(0, 2);
-        logLine("audio started");
+    // Audio is opened once the interface has loaded - see startAudio(). A
+    // fallback timer covers the case where the page never reports back, so a
+    // webview problem cannot also mean no sound.
+    juce::Timer::callAfterDelay(4000, [safe = juce::Component::SafePointer<ShellComponent>(this)] {
+        if (safe != nullptr) safe->startAudio();
     });
 }
 
@@ -86,6 +45,74 @@ ShellComponent::~ShellComponent() {
     web_.reset();
     bridge_.stop();
     shutdownAudio();
+}
+
+void ShellComponent::parentHierarchyChanged() {
+    // Fires when this component is attached to the window. By now there is a
+    // native peer, which is what WebView2 needs and what the constructor could
+    // not offer it.
+    if (webViewAttempted_ || bridgePort_ <= 0 || getPeer() == nullptr) return;
+    webViewAttempted_ = true;
+    createWebView();
+}
+
+void ShellComponent::startAudio() {
+    if (audioStarted_) return;
+    audioStarted_ = true;
+    setAudioChannels(0, 2);
+}
+
+/**
+ * The only reason to subclass: JUCE reports page load by virtual method, and
+ * the shell needs to know when the interface is up so it can open the audio
+ * device without stalling the navigation that gets it there.
+ */
+struct ShellComponent::WebView : juce::WebBrowserComponent {
+    WebView(const Options& options, ShellComponent& owner)
+        : juce::WebBrowserComponent(options), owner_(owner) {}
+
+    void pageFinishedLoading(const juce::String&) override { owner_.startAudio(); }
+
+    ShellComponent& owner_;
+};
+
+void ShellComponent::createWebView() {
+    // The backend must be named explicitly. Left to itself JUCE falls back to
+    // the legacy ActiveX browser, which is Internet Explorer and cannot parse
+    // an arrow function, let alone async/await - the interface loads and then
+    // dies on a syntax error.
+    // Keep the profile out of the roaming user directory so the app stays
+    // self-contained. Created up front: WebView2 will not start if the folder
+    // it is handed does not already exist.
+    const auto dataDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                             .getChildFile("MotifWebView");
+    dataDir.createDirectory();
+
+    // Open a debug port on the embedded view.
+    //
+    // WebView2 reads this variable when it creates its environment, which makes
+    // the interface inside the shipped app reachable over CDP. That is what
+    // lets a test drive the real thing - the exe, its engine, its window -
+    // rather than a browser pointed at the same page and hoping they match.
+    // Loopback only, and only ever bound on this machine.
+#if JUCE_WINDOWS
+    ::SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                              L"--remote-debugging-port=9222 --remote-allow-origins=*");
+#endif
+
+    const auto options =
+        juce::WebBrowserComponent::Options{}
+            .withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
+            .withWinWebView2Options(
+                juce::WebBrowserComponent::Options::WinWebView2{}
+                    .withUserDataFolder(dataDir)
+                    .withBackgroundColour(juce::Colour(0xff070910)));
+
+    web_ = std::make_unique<WebView>(options, *this);
+    addAndMakeVisible(*web_);
+    resized();
+    web_->goToURL(url_);
+    repaint();
 }
 
 juce::File ShellComponent::findWebRoot() {

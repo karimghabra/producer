@@ -218,6 +218,33 @@ GridFit inferGrid(const std::vector<RawNote>& notes, const FitOptions& opts) {
         }
     }
 
+    // --- finer than it needed to be? --------------------------------------
+    //
+    // Play straight eighths and every onset lands on the sixteenth grid too, so
+    // the two readings score identically on the onsets and the subdivision
+    // prior alone decides - which called deliberate eighth-note playing
+    // "sixteenths". Occupancy separates them the same way it separates shuffle
+    // from triplets: if the odd steps are never used, the grid has twice the
+    // resolution the performance actually implies.
+    //
+    // Stops at eighths rather than going all the way down: a part is still
+    // worth holding on a grid you can add an off-beat to. Anything that does
+    // use an odd step stops this immediately - including a swung part, whose
+    // late off-beats round onto odd steps and whose shuffle is measured below.
+    //
+    // The phase needs no correction. Every onset sits at p + 2k*spacing, which
+    // is p + k*(2*spacing): the same origin, counted in bigger steps.
+    while (fit.subdivision >= 4 && fit.subdivision % 2 == 0 && onsets.size() >= 4) {
+        bool anyOdd = false;
+        for (double t : onsets) {
+            const long long step = std::llround((t - fit.phaseSec) / spacing);
+            if (((step % 2) + 2) % 2 != 0) { anyOdd = true; break; }
+        }
+        if (anyOdd) break;
+        fit.subdivision /= 2;
+        spacing = 60.0 / fit.bpm / fit.subdivision;
+    }
+
     // --- swing ------------------------------------------------------------
     //
     // Two passes, because the two quantities contaminate each other. The phase

@@ -32,6 +32,23 @@
       <div id="view-steps" class="view on">
         <div id="pattern-bar" class="bar"></div>
         <div id="steps" class="steps"></div>
+
+        <!-- What the fitter heard. Amber is what you played, mint is where it
+             landed; the panel exists so the app shows its reasoning instead of
+             silently moving your notes. -->
+        <div id="take" class="take">
+          <div class="take-head">
+            <span class="take-title">TAKE</span>
+            <div id="take-stats" class="take-stats"></div>
+          </div>
+          <canvas id="take-canvas"></canvas>
+          <div id="take-controls" class="take-controls"></div>
+          <div id="take-empty" class="take-empty">
+            Arm a track, hit <b>RECORD</b>, and play on <b>A</b>&ndash;<b>K</b>.
+            Hit <b>RECORD</b> again and Motif works out the tempo, the grid and
+            the shuffle you were feeling, then lays your take onto it.
+          </div>
+        </div>
       </div>
       <div id="view-mix" class="view"><div id="mixer" class="mixer"></div></div>
       <div id="view-sound" class="view">

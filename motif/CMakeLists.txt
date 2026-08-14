@@ -76,10 +76,23 @@ target_sources(Motif PRIVATE
     src/music/Song.cpp
     src/music/Presets.cpp
     src/net/Bridge.cpp
-    src/ui/Theme.cpp
 )
 
 target_include_directories(Motif PRIVATE src)
+
+# WebView2 is loaded at runtime through WebView2Loader.dll. Without it beside
+# the executable the backend faults during construction - and as an access
+# violation rather than a C++ exception, so nothing can catch it and the
+# process simply disappears. The NuGet package ships the DLL; put it where the
+# loader will look.
+if (WIN32)
+    add_custom_command(TARGET Motif POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/webview2/Microsoft.Web.WebView2/build/native/x64/WebView2Loader.dll"
+            "$<TARGET_FILE_DIR:Motif>"
+        COMMENT "Copying WebView2Loader.dll beside Motif.exe"
+        VERBATIM)
+endif()
 
 target_compile_definitions(Motif PRIVATE
     JUCE_WEB_BROWSER=1

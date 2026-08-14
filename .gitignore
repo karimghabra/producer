@@ -11,3 +11,5 @@ data/
 .DS_Store
 *.tsbuildinfo
 renders/
+# Screenshots written by the UI verification run.
+motif/tests/ui/shots/

@@ -1,0 +1,14 @@
+{
+  "name": "motif-ui-tests",
+  "private": true,
+  "type": "module",
+  "description": "Playwright checks that drive the running Motif.exe over CDP.",
+  "scripts": {
+    "verify": "node verify.mjs",
+    "verify:shots": "node verify.mjs --shot shots/ui.png",
+    "verify:browser": "node verify.mjs --browser"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}

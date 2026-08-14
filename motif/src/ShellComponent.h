@@ -33,12 +33,39 @@ public:
 
     void paint(juce::Graphics&) override;
     void resized() override;
+    void parentHierarchyChanged() override;
 
     int bridgePort() const { return bridgePort_; }
 
 private:
     /** Locate the interface on disk by walking up from the executable. */
     static juce::File findWebRoot();
+
+    /**
+     * Build the embedded view.
+     *
+     * Deferred until this component actually has a native peer. WebView2 needs
+     * a real HWND to attach to, and in the constructor there is not one yet -
+     * the component is not added to the window until after it returns.
+     */
+    void createWebView();
+    bool webViewAttempted_ = false;
+
+    /**
+     * Open the audio device.
+     *
+     * Deferred until the interface has finished loading. Enumerating the
+     * machine's audio drivers took 22 seconds here and it blocks the message
+     * thread throughout - which also stalls WebView2's navigation, so the
+     * window sits empty for the whole of it. Once the page is up the block
+     * costs nothing visible: the interface runs in the webview's own process
+     * and the bridge answers on its own thread, so neither is waiting on this.
+     */
+    void startAudio();
+    bool audioStarted_ = false;
+
+    /** Notifies the shell when the interface has finished loading. */
+    struct WebView;
 
     Engine engine_;
     Bridge bridge_{ engine_ };
