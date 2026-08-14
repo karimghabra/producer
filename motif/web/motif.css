@@ -127,7 +127,7 @@ section { padding:14px; overflow:auto; min-width:0; }
   background:var(--ink2); border:1px solid #33405a; border-radius:9px;
   box-shadow:0 12px 34px -8px rgba(0,0,0,.8);
 }
-.menu.wide { min-width:268px; max-height:70vh; overflow-y:auto; }
+.menu.wide { min-width:268px; max-width:340px; max-height:70vh; overflow-y:auto; }
 .menu-head { font:700 8.5px var(--sans); letter-spacing:.15em; color:var(--dimmer);
              padding:8px 10px 5px; }
 .menu-row { display:flex; gap:5px; padding:0 5px 4px; }
@@ -277,13 +277,43 @@ input[type=range]::-webkit-slider-thumb:active { cursor:grabbing; }
 .choice-row { display:flex; gap:5px; flex-wrap:wrap; }
 
 /* ---------- keyboard ---------- */
-footer { padding:10px 14px; display:flex; align-items:center; gap:16px; }
-.keys { display:flex; gap:4px; flex:1; }
-.key { flex:1; height:48px; border-radius:6px; background:var(--ink2);
+footer { padding:9px 14px 11px; display:flex; flex-direction:column; gap:9px; }
+.play-bar { display:flex; align-items:center; gap:14px; }
+.keychip { padding:5px 11px; border-radius:6px; background:var(--ink0);
+           border:1px solid var(--line); font:600 11px var(--mono); color:var(--dim); }
+.keychip:hover { border-color:var(--fitted); color:var(--fitted); }
+.octave { display:flex; align-items:center; gap:5px; }
+.octave label { font-size:8.5px; letter-spacing:.14em; color:var(--dimmer); }
+.octave button { width:20px; height:20px; border-radius:5px; background:var(--ink2);
+                 border:1px solid var(--line); color:var(--dim); font:700 12px var(--sans);
+                 line-height:0; }
+.octave button:hover { border-color:var(--fitted); color:var(--fitted); }
+.octave span { font:600 11px var(--mono); color:var(--text); min-width:18px; text-align:center; }
+.midi { font:10px var(--mono); color:var(--dimmer); max-width:220px;
+        overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.midi.on { color:var(--fitted); }
+.midi.on::before { content:"MIDI "; color:var(--dimmer); }
+
+.keys { display:flex; flex-direction:column; gap:4px; }
+.key-row { display:flex; gap:4px; }
+.key { flex:1; height:46px; border-radius:6px; background:var(--ink2);
        border:1px solid var(--line); position:relative;
-       font:700 10px var(--sans); color:var(--dimmer);
-       display:flex; align-items:flex-end; justify-content:center; padding-bottom:5px; }
+       display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; }
+.key b { font:700 10px var(--sans); color:var(--dim); }
+.key span { font:9px var(--mono); color:var(--dimmer); }
 .key.black { background:var(--ink0); flex:.62; }
-.key.down { background:var(--c); color:#06121a;
+/* The tonic, marked clearly: it is where the scale starts, and knowing which
+   keys are home is most of what makes an unfamiliar layout playable. */
+.key.tonic { border-color:#38455e; background:linear-gradient(180deg,var(--ink3),var(--ink2)); }
+.key.tonic b { color:var(--text); }
+.key.tonic span { color:var(--c); font-weight:600; }
+.key.tonic::before { content:""; position:absolute; top:5px; left:50%; translate:-50% 0;
+                     width:4px; height:4px; border-radius:50%; background:var(--c); opacity:.85; }
+.key:hover { border-color:#3d4b68; }
+.key.down { background:var(--c); border-color:var(--c);
             box-shadow:0 0 0 1px var(--c),0 0 18px -4px var(--c); transform:translateY(-2px); }
-.hint { font-size:10px; color:var(--dimmer); white-space:nowrap; }
+.key.down b, .key.down span { color:#06121a; }
+/* Two rows means half the height each, or the keyboard eats the window. */
+.keys.two-row .key { height:38px; }
+.hint { font-size:10px; color:var(--dimmer); white-space:nowrap; margin-left:auto; }
+.choice-row.pad { padding:0 9px 6px; }

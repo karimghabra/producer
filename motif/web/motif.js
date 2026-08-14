@@ -693,26 +693,190 @@ function choiceControl(p) {
   return wrap;
 }
 
-const KEYS = [
+// --------------------------------------------------------------------------
+// The playing surface
+//
+// Two ways to lay a computer keyboard out over an instrument.
+//
+// Chromatic is a piano: the home row is the white keys, the row above holds
+// the black ones where they would be. It is the right thing when you know
+// what you are reaching for.
+//
+// In-key throws that away and gives every key a degree of the current scale
+// instead. There are then no wrong notes to hit, only ones you like more than
+// others - which is the difference between playing an idea and hunting for it.
+// Two rows give two and a half octaves in the scale, which is enough for a
+// bassline and the hook over it.
+// --------------------------------------------------------------------------
+
+const PIANO_KEYS = [
   ['a', 0, 0], ['w', 1, 1], ['s', 2, 0], ['e', 3, 1], ['d', 4, 0], ['f', 5, 0],
   ['t', 6, 1], ['g', 7, 0], ['y', 8, 1], ['h', 9, 0], ['u', 10, 1], ['j', 11, 0],
   ['k', 12, 0], ['o', 13, 1], ['l', 14, 0],
 ];
+const SCALE_ROW_LOW  = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
+const SCALE_ROW_HIGH = ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o'];
+
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+let scaleLock = true;
+let octave = 0;
+
+/** What each key plays right now. Keyed by the character you press. */
+function keyMap() {
+  const map = new Map();
+  if (!scaleLock) {
+    for (const [k, semi, black] of PIANO_KEYS)
+      map.set(k, { semi, black, label: NOTE_NAMES[(48 + semi) % 12] });
+    return map;
+  }
+  const degrees = state?.key?.degrees ?? 7;
+  SCALE_ROW_LOW.forEach((k, i) => map.set(k, { degree: i, row: 0, tonic: i % degrees === 0 }));
+  SCALE_ROW_HIGH.forEach((k, i) => map.set(k, { degree: i + degrees, row: 1,
+                                                tonic: (i + degrees) % degrees === 0 }));
+  return map;
+}
+
+/** MIDI note a mapped key sounds, for labelling. Mirrors Theory.h. */
+function noteForKey(info) {
+  if (!scaleLock) return 48 + 12 * octave + info.semi;
+  const steps = SCALE_STEPS[state?.key?.scaleIndex ?? 0] ?? SCALE_STEPS[0];
+  const n = steps.length;
+  const d = info.degree;
+  const wrapped = ((d % n) + n) % n;
+  const shift = Math.floor(d / n);
+  return 12 * (5 + octave + shift) + (state?.key?.root ?? 0) + steps[wrapped];
+}
+
+// Same tables as Theory.h. Only used for labelling the keys - every note that
+// actually sounds is worked out by the engine from the same scale.
+const SCALE_STEPS = [
+  [0, 2, 3, 5, 7, 8, 10], [0, 2, 4, 5, 7, 9, 11], [0, 2, 3, 5, 7, 9, 10],
+  [0, 1, 3, 5, 7, 8, 10], [0, 2, 4, 6, 7, 9, 11], [0, 2, 4, 5, 7, 9, 10],
+  [0, 1, 3, 5, 6, 8, 10], [0, 2, 3, 5, 7, 8, 11], [0, 1, 4, 5, 7, 8, 10],
+  [0, 3, 5, 7, 10], [0, 2, 4, 7, 9], [0, 3, 5, 6, 7, 10], [0, 2, 4, 6, 8, 10],
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+];
+const SCALE_NAMES = [
+  'Minor', 'Major', 'Dorian', 'Phrygian', 'Lydian', 'Mixolydian', 'Locrian',
+  'Harmonic Minor', 'Phrygian Dominant', 'Minor Pentatonic', 'Major Pentatonic',
+  'Blues', 'Whole Tone', 'Chromatic',
+];
+
+function playKey(k) {
+  const info = keyMap().get(k);
+  if (!info || heldKeys.has(k)) return;
+  heldKeys.add(k);
+  if (scaleLock) api.send('noteOnDegree', { degree: info.degree, octave, velocity: 0.85 });
+  else           api.send('noteOn', { note: 48 + 12 * octave + info.semi, velocity: 0.85 });
+  renderKeys();
+}
+
+function releaseKey(k) {
+  const info = keyMap().get(k);
+  if (!info || !heldKeys.has(k)) return;
+  heldKeys.delete(k);
+  if (scaleLock) api.send('noteOffDegree', { degree: info.degree, octave });
+  else           api.send('noteOff', { note: 48 + 12 * octave + info.semi });
+  renderKeys();
+}
+
+let keysShape = null;
 
 function renderKeys() {
   const host = $('#keys');
-  if (host.childElementCount) {
-    [...host.children].forEach((el) => el.classList.toggle('down', heldKeys.has(el.dataset.k)));
+  const map = keyMap();
+  const shape = `${scaleLock}|${octave}|${state?.key?.root}|${state?.key?.scaleIndex}`;
+
+  if (shape === keysShape) {
+    host.querySelectorAll('.key').forEach(
+      (el) => el.classList.toggle('down', heldKeys.has(el.dataset.k)));
     return;
   }
-  KEYS.forEach(([k, semi, black]) => {
-    const el = document.createElement('div');
-    el.className = 'key' + (black ? ' black' : '');
-    el.dataset.k = k;
-    el.dataset.semi = semi;
-    el.textContent = k.toUpperCase();
-    host.append(el);
+  keysShape = shape;
+  host.innerHTML = '';
+  host.classList.toggle('two-row', scaleLock);
+
+  const build = (chars) => {
+    const row = document.createElement('div');
+    row.className = 'key-row';
+    for (const k of chars) {
+      const info = map.get(k);
+      const el = document.createElement('div');
+      el.className = 'key'
+        + (info.black ? ' black' : '')
+        + (info.tonic ? ' tonic' : '');
+      el.dataset.k = k;
+      const note = noteForKey(info);
+      el.innerHTML = `<b>${k.toUpperCase()}</b>`
+        + `<span>${NOTE_NAMES[((note % 12) + 12) % 12]}${Math.floor(note / 12) - 1}</span>`;
+      // Playable with the mouse too, for anyone who would rather point at it.
+      el.addEventListener('pointerdown', () => playKey(k));
+      el.addEventListener('pointerup', () => releaseKey(k));
+      el.addEventListener('pointerleave', () => releaseKey(k));
+      row.append(el);
+    }
+    return row;
+  };
+
+  if (scaleLock) host.append(build(SCALE_ROW_HIGH), build(SCALE_ROW_LOW));
+  else           host.append(build(PIANO_KEYS.map(([k]) => k)));
+
+  host.querySelectorAll('.key').forEach(
+    (el) => el.classList.toggle('down', heldKeys.has(el.dataset.k)));
+}
+
+/** Key and scale, so a whole track can be moved into another mode at once. */
+function openKeyMenu(anchor) {
+  closeMenu();
+  const menu = document.createElement('div');
+  menu.className = 'menu wide';
+  menu.id = 'track-menu';
+  menu.innerHTML = '<div class="menu-head">ROOT</div>';
+
+  const roots = document.createElement('div');
+  roots.className = 'choice-row pad';
+  NOTE_NAMES.forEach((name, i) => {
+    const b = document.createElement('button');
+    b.className = 'chip small' + (state.key.root === i ? ' on' : '');
+    b.textContent = name;
+    b.onclick = () => { api.send('key', { root: i }); closeMenu(); };
+    roots.append(b);
   });
+  menu.append(roots);
+
+  const head = document.createElement('div');
+  head.className = 'menu-head';
+  head.textContent = 'SCALE';
+  menu.append(head);
+  const scales = document.createElement('div');
+  scales.className = 'choice-row pad';
+  SCALE_NAMES.forEach((name, i) => {
+    const b = document.createElement('button');
+    b.className = 'chip small' + (state.key.scaleIndex === i ? ' on' : '');
+    b.textContent = name;
+    b.onclick = () => { api.send('key', { scale: i }); closeMenu(); };
+    scales.append(b);
+  });
+  menu.append(scales);
+
+  document.body.append(menu);
+  const box = anchor.getBoundingClientRect();
+  menu.style.left = Math.min(box.left, innerWidth - menu.offsetWidth - 8) + 'px';
+  menu.style.top = box.top - menu.offsetHeight - 6 + 'px';
+  setTimeout(() => addEventListener('pointerdown', dismissMenu), 0);
+}
+
+function setOctave(v) {
+  const next = Math.max(-3, Math.min(3, v));
+  if (next === octave) return;
+  // Anything held is sounding at the old octave and would never be told to
+  // stop, because the release would be sent for a note that was never started.
+  api.send('allNotesOff');
+  heldKeys.clear();
+  octave = next;
+  $('#oct-value').textContent = (octave > 0 ? '+' : '') + octave;
+  renderKeys();
 }
 
 /**
@@ -726,6 +890,10 @@ function renderKeys() {
 function shapeKey() {
   return [
     view, selected, state.tracks.length, state.take?.rev ?? -1,
+    // The keyboard is laid out from the key, so a change of root or scale has
+    // to count as a change of shape. Without this the engine moved key and the
+    // keys on screen kept playing - and showing - the old one.
+    state.key.root, state.key.scaleIndex,
     state.tracks.map((t) =>
       `${t.name}|${t.engine}|${t.colour}|${t.seqEnabled}|${t.activePattern}|${t.patterns.length}`).join(','),
     state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.length,
@@ -759,6 +927,13 @@ function render() {
   $('#keys').style.setProperty('--c', track ? hex(track.colour) : '#5ee6c5');
 
   $('#project-name').textContent = state.name || 'Untitled';
+  $('#key-name').textContent = `${NOTE_NAMES[state.key.root]} ${state.key.scale}`;
+  $('#scale-lock').classList.toggle('on', scaleLock);
+  const midi = state.midi || [];
+  $('#midi').textContent = midi.length
+    ? (midi.length === 1 ? midi[0] : `${midi.length} MIDI inputs`)
+    : '';
+  $('#midi').classList.toggle('on', midi.length > 0);
   $('#r-bpm').textContent = state.bpm.toFixed(1);
   $('#r-cycle').textContent = state.cycle + ' st';
   $('#r-peak').textContent = pct(state.peak) + '%';
@@ -810,37 +985,41 @@ document.querySelectorAll('#views .tab').forEach((tab) => {
   };
 });
 
+$('#scale-lock').onclick = () => {
+  api.send('allNotesOff');
+  heldKeys.clear();
+  scaleLock = !scaleLock;
+  $('#scale-lock').classList.toggle('on', scaleLock);
+  renderKeys();
+};
+$('#key-pick').onclick = (e) => openKeyMenu(e.currentTarget);
+$('#oct-down').onclick = () => setOctave(octave - 1);
+$('#oct-up').onclick = () => setOctave(octave + 1);
+
 addEventListener('keydown', (e) => {
   if (e.repeat) return;
+  // Typing into the interface is not playing. Without this, naming a project
+  // plays a chord and leaves the notes hanging when the field takes the keyup.
+  if (e.target.matches('input, textarea, [contenteditable="true"]')) return;
+
   const k = e.key.toLowerCase();
   if (k === ' ') { e.preventDefault(); api.send(state && state.playing ? 'stop' : 'play'); return; }
   if (k === 'r') { api.send('record'); return; }
-  const entry = KEYS.find((x) => x[0] === k);
-  if (entry && !heldKeys.has(k)) {
-    heldKeys.add(k);
-    api.send('noteOn', { note: 48 + entry[1], velocity: 0.85 });
-    renderKeys();
-  }
+  if (k === 'z') { setOctave(octave - 1); return; }
+  if (k === 'x') { setOctave(octave + 1); return; }
+  playKey(k);
 });
-addEventListener('keyup', (e) => {
-  const k = e.key.toLowerCase();
-  const entry = KEYS.find((x) => x[0] === k);
-  if (entry && heldKeys.has(k)) {
-    heldKeys.delete(k);
-    api.send('noteOff', { note: 48 + entry[1] });
-    renderKeys();
-  }
-});
+addEventListener('keyup', (e) => releaseKey(e.key.toLowerCase()));
 // The take plot is drawn at device pixels for a specific size, so it has to be
 // redrawn whenever that size changes - including when the window is resized.
 addEventListener('resize', () => { if (view === 'steps') drawTake(); });
 
-// A held note must end when focus goes, or it sustains forever.
+// A held note must end when focus goes, or it sustains forever. Asking the
+// engine to drop everything is safer than replaying the releases: the mapping
+// may have changed under the held keys.
 addEventListener('blur', () => {
-  heldKeys.forEach((k) => {
-    const entry = KEYS.find((x) => x[0] === k);
-    if (entry) api.send('noteOff', { note: 48 + entry[1] });
-  });
+  if (!heldKeys.size) return;
+  api.send('allNotesOff');
   heldKeys.clear();
   renderKeys();
 });

@@ -23,6 +23,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "music/Quantizer.h"
 
@@ -49,6 +50,9 @@ public:
 
     bool running() const { return running_.load(std::memory_order_relaxed); }
     int port() const { return port_; }
+
+    /** Names of the connected MIDI inputs, for the interface to report. */
+    void setMidiDevices(std::vector<std::string> names);
 
 private:
     std::string stateJson() const;
@@ -87,6 +91,9 @@ private:
     int takePattern_ = -1;
     /** Bumped on every fit, so the interface knows when to fetch the detail. */
     int takeRev_ = 0;
+
+    mutable std::mutex midiMutex_;
+    std::vector<std::string> midiDevices_;
 };
 
 } // namespace motif

@@ -333,6 +333,88 @@ check(now.tracks.length === startCount &&
 await cmd({ type: 'selectTrack', track: 0 });
 await page.waitForTimeout(300);
 
+// --- the playing surface -----------------------------------------------------
+//
+// The app's whole premise is that you play the part rather than draw it, so
+// what the keys do is not a detail.
+await cmd({ type: 'selectTrack', track: 4 });
+await cmd({ type: 'key', root: 9, scale: 0 });        // A minor
+await page.waitForTimeout(350);
+
+check(await page.locator('#scale-lock').evaluate((el) => el.classList.contains('on')),
+      'keys are locked to the scale by default');
+const rows = await page.locator('#keys .key-row').count();
+const keyCount = await page.locator('#keys .key').count();
+check(rows === 2 && keyCount === 18, 'two rows of scale keys', `${rows} rows, ${keyCount} keys`);
+
+// Every key must be in the scale. That is the entire promise of the mode.
+const labels = await page.locator('#keys .key span').allTextContents();
+const A_MINOR = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+const outOfKey = labels.filter((l) => !A_MINOR.includes(l.replace(/-?\d+$/, '')));
+check(outOfKey.length === 0, 'nothing on the keyboard is out of key',
+      outOfKey.length ? outOfKey.join(',') : labels.slice(0, 9).join(' '));
+
+// Pressing a key must reach the engine as the right note.
+await page.locator('#keys .key[data-k="a"]').hover();
+await page.mouse.down();
+await page.waitForTimeout(220);
+const sounding = await engine();
+await page.mouse.up();
+check(sounding.peak > 0.01, 'pressing a key sounds a note', `peak ${sounding.peak.toFixed(3)}`);
+
+// Octave shift, and no note left hanging across it.
+await page.locator('#oct-up').click();
+await page.waitForTimeout(250);
+check(await page.locator('#oct-value').innerText() === '+1', 'octave shifts up',
+      await page.locator('#oct-value').innerText());
+const shifted = await page.locator('#keys .key[data-k="a"] span').innerText();
+await page.locator('#oct-down').click();
+await page.waitForTimeout(250);
+const home = await page.locator('#keys .key[data-k="a"] span').innerText();
+check(parseInt(shifted.replace(/\D+/g, ''), 10) === parseInt(home.replace(/\D+/g, ''), 10) + 1,
+      'and the notes move with it', `${home} -> ${shifted}`);
+
+// Changing key must move the whole keyboard.
+await page.locator('#key-pick').click();
+await page.waitForTimeout(250);
+await page.locator('#track-menu .chip', { hasText: /^C$/ }).first().click();
+await page.waitForTimeout(400);
+const cLabels = await page.locator('#keys .key span').allTextContents();
+const C_MAJOR_ROOTS = ['C', 'D', 'D#', 'F', 'G', 'G#', 'A#'];   // C minor
+check(cLabels.every((l) => C_MAJOR_ROOTS.includes(l.replace(/-?\d+$/, ''))),
+      'changing the root moves every key', cLabels.slice(0, 7).join(' '));
+
+// A pentatonic scale has five degrees, so the same keys cover more ground.
+await page.locator('#key-pick').click();
+await page.waitForTimeout(250);
+await page.locator('#track-menu .chip', { hasText: 'Minor Pentatonic' }).click();
+await page.waitForTimeout(400);
+const pent = await page.locator('#keys .key span').allTextContents();
+const pentNames = new Set(pent.map((l) => l.replace(/-?\d+$/, '')));
+check(pentNames.size === 5, 'a five-note scale gives five note names',
+      [...pentNames].join(' '));
+
+// Chromatic mode puts the piano back.
+await page.locator('#scale-lock').click();
+await page.waitForTimeout(350);
+// Six, not five: the piano layout runs past an octave, up to D above the C.
+check(await page.locator('#keys .key.black').count() === 6, 'chromatic mode has black keys',
+      `${await page.locator('#keys .key.black').count()} black`);
+await page.locator('#scale-lock').click();
+await cmd({ type: 'key', root: 9, scale: 0 });
+await page.waitForTimeout(300);
+
+// Typing a project name must not play notes.
+await page.locator('#project').click();
+await page.waitForTimeout(250);
+await page.locator('#proj-name').fill('');
+await page.locator('#proj-name').type('adg', { delay: 40 });
+await page.waitForTimeout(250);
+check(await page.locator('#keys .key.down').count() === 0,
+      'typing in a field does not play the keyboard');
+await page.keyboard.press('Escape');
+await page.waitForTimeout(200);
+
 // --- projects ----------------------------------------------------------------
 //
 // The one part of the app where a bug costs someone their work, so this checks

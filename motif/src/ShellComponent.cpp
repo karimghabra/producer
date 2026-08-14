@@ -52,6 +52,9 @@ ShellComponent::ShellComponent() {
 
 ShellComponent::~ShellComponent() {
     stopTimer();
+    // Before the engine goes: a callback arriving mid-teardown would be
+    // holding a reference to something already destroyed.
+    midiInputs_.clear();
 
     // Before anything is torn down, while the song is still whole.
     std::string ignored;
@@ -75,12 +78,56 @@ void ShellComponent::startAudio() {
     if (audioStarted_) return;
     audioStarted_ = true;
     setAudioChannels(0, 2);
+    openMidiInputs();
     startTimer(60000);
 }
 
 void ShellComponent::timerCallback() {
     std::string ignored;
     saveProject(kAutosaveName, engine_.song(), ignored);
+
+    // Devices get plugged in mid-session. Rescanning on the autosave tick
+    // costs nothing and means a controller connected after launch works
+    // without restarting the app.
+    openMidiInputs();
+}
+
+void ShellComponent::openMidiInputs() {
+    const auto devices = juce::MidiInput::getAvailableDevices();
+
+    // Drop anything that has gone away, keep what is still there open. Closing
+    // and reopening every device each scan would cut notes that are sounding.
+    for (int i = int(midiInputs_.size()) - 1; i >= 0; --i) {
+        const auto id = midiInputs_[size_t(i)]->getIdentifier();
+        const bool stillThere = std::any_of(devices.begin(), devices.end(),
+                                            [&](const auto& d) { return d.identifier == id; });
+        if (!stillThere) midiInputs_.erase(midiInputs_.begin() + i);
+    }
+
+    for (const auto& device : devices) {
+        const bool alreadyOpen = std::any_of(
+            midiInputs_.begin(), midiInputs_.end(),
+            [&](const auto& in) { return in->getIdentifier() == device.identifier; });
+        if (alreadyOpen) continue;
+
+        if (auto input = juce::MidiInput::openDevice(device.identifier, this)) {
+            input->start();
+            midiInputs_.push_back(std::move(input));
+        }
+    }
+
+    std::vector<std::string> names;
+    names.reserve(midiInputs_.size());
+    for (const auto& in : midiInputs_) names.push_back(in->getName().toStdString());
+    bridge_.setMidiDevices(std::move(names));
+}
+
+void ShellComponent::handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& msg) {
+    // Called on the driver's own thread. The engine's note queue is what makes
+    // that safe; nothing here touches the song or the audio buffers.
+    if (msg.isNoteOn())        engine_.noteOn(msg.getNoteNumber(), msg.getFloatVelocity());
+    else if (msg.isNoteOff())  engine_.noteOff(msg.getNoteNumber());
+    else if (msg.isAllNotesOff() || msg.isAllSoundOff()) engine_.allNotesOff();
 }
 
 /**

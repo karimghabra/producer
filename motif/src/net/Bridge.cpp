@@ -126,7 +126,18 @@ std::string Bridge::stateJson() const {
       << ",\"cycle\":" << song.polymeterCycle()
       << ",\"sidechainSource\":" << song.sidechainSource
       << ",\"name\":\"" << esc(song.name) << "\""
+      << ",\"midi\":[";
+    {
+        std::lock_guard<std::mutex> lock(midiMutex_);
+        for (size_t i = 0; i < midiDevices_.size(); ++i) {
+            if (i) j << ',';
+            j << '"' << esc(midiDevices_[i]) << '"';
+        }
+    }
+    j << "]"
       << ",\"key\":{\"root\":" << song.key.root
+      << ",\"scaleIndex\":" << int(song.key.scale)
+      << ",\"degrees\":" << theory::scaleSteps(song.key.scale).size()
       << ",\"scale\":\"" << esc(theory::scaleName(song.key.scale)) << "\"}"
       << ",\"master\":{"
       << "\"gain\":" << num(song.master.gain)
@@ -316,6 +327,11 @@ void Bridge::refitTake() {
     });
 }
 
+void Bridge::setMidiDevices(std::vector<std::string> names) {
+    std::lock_guard<std::mutex> lock(midiMutex_);
+    midiDevices_ = std::move(names);
+}
+
 std::string Bridge::takeJson() const {
     std::lock_guard<std::mutex> lock(takeMutex_);
     std::ostringstream j;
@@ -395,6 +411,33 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
 
     if (type == "bpm")   { engine_.editSong([&](Song& s) { s.bpm = std::clamp(value, 40.0, 240.0); }); return true; }
     if (type == "swing") { engine_.editSong([&](Song& s) { s.swing = std::clamp(value, 0.0, 1.0); }); return true; }
+
+    if (type == "key") {
+        const int root = intField(body, "root", -1);
+        const int scale = intField(body, "scale", -1);
+        engine_.editSong([&](Song& s) {
+            if (root >= 0) s.key.root = ((root % 12) + 12) % 12;
+            if (scale >= 0) s.key.scale = theory::Scale(std::clamp(scale, 0, 13));
+        });
+        return true;
+    }
+
+    // Degrees rather than semitones, so the interface can offer a keyboard on
+    // which nothing is out of key without duplicating the scale tables.
+    if (type == "noteOnDegree") {
+        const Song s = engine_.song();
+        const int note = theory::degreeToMidi(s.key, intField(body, "degree", 0),
+                                              intField(body, "octave", 0));
+        engine_.noteOn(note, float(numField(body, "velocity", 0.85)));
+        return true;
+    }
+    if (type == "noteOffDegree") {
+        const Song s = engine_.song();
+        engine_.noteOff(theory::degreeToMidi(s.key, intField(body, "degree", 0),
+                                             intField(body, "octave", 0)));
+        return true;
+    }
+    if (type == "allNotesOff") { engine_.allNotesOff(); return true; }
 
     if (type == "selectTrack") {
         engine_.editSong([&](Song& s) {

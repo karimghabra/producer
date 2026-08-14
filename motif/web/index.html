@@ -66,8 +66,19 @@
   </main>
 
   <footer>
+    <div class="play-bar">
+      <button id="scale-lock" class="toggle" title="Map the keys to the scale, so nothing you play is out of key"><i></i><label>IN KEY</label></button>
+      <button id="key-pick" class="keychip" title="Key and scale"><span id="key-name">A Minor</span></button>
+      <div class="octave">
+        <label>OCT</label>
+        <button id="oct-down" title="Z">&minus;</button>
+        <span id="oct-value">0</span>
+        <button id="oct-up" title="X">+</button>
+      </div>
+      <div id="midi" class="midi"></div>
+      <div class="hint">SPACE play &nbsp;|&nbsp; R record &nbsp;|&nbsp; Z X octave</div>
+    </div>
     <div id="keys" class="keys"></div>
-    <div class="hint">A-K plays the armed track &nbsp;|&nbsp; SPACE play &nbsp;|&nbsp; R record</div>
   </footer>
 </div>
 <script src="motif.js"></script>

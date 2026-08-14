@@ -23,7 +23,8 @@
 namespace motif {
 
 class ShellComponent : public juce::AudioAppComponent,
-                       private juce::Timer {
+                       private juce::Timer,
+                       private juce::MidiInputCallback {
 public:
     /**
      * The project the session is kept in when it has not been given a name.
@@ -76,6 +77,18 @@ private:
 
     /** Periodic autosave, so a crash costs a minute rather than the session. */
     void timerCallback() override;
+
+    /**
+     * Open every MIDI input on the machine.
+     *
+     * Every one, rather than asking which: a controller is plugged in to be
+     * played, and a device chooser is a dialog standing between someone and
+     * the thing they came to do. Notes arrive from whichever they touch.
+     */
+    void openMidiInputs();
+    void handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage&) override;
+
+    std::vector<std::unique_ptr<juce::MidiInput>> midiInputs_;
 
     /** Notifies the shell when the interface has finished loading. */
     struct WebView;
