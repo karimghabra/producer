@@ -6,6 +6,7 @@
 #include "audio/Engine.h"
 #include "audio/Fx.h"
 #include "music/Presets.h"
+#include "music/Project.h"
 #include "music/Quantizer.h"
 #include "music/Theory.h"
 
@@ -382,6 +383,118 @@ int main() {
         check(drumSilent == 0, "every drum preset makes a sound",
               std::to_string(motif::drumPresets().size()) + " presets");
         check(drumClipping == 0, "no drum preset clips on its own", "");
+    }
+
+    // --- the project format ------------------------------------------------
+    //
+    // A save format is where work quietly goes missing: a field that is written
+    // but not read, or read into the wrong place, looks fine until the day
+    // someone reopens something they care about. So this compares a song with
+    // itself after a full trip through text.
+    std::printf("\nProject round trip:\n");
+    {
+        Song song = makeDefaultSong();
+
+        // Move things off their defaults first. Round-tripping a song that is
+        // entirely default would pass even if nothing were saved at all.
+        song.name = "Round Trip";
+        song.bpm = 137.5;
+        song.swing = 0.42;
+        song.key.root = 7;
+        song.barsPerLoop = 4;
+        song.master.reverb.mix = 0.31f;
+        song.master.delay.beats = 0.375f;
+        song.tracks[0].name = "Thump";
+        song.tracks[0].colour = 0xff123456;
+        song.tracks[0].mixer.pan = -0.4f;
+        song.tracks[0].instrument.drum.tune = 41.5f;
+        song.tracks[0].instrument.drum.snap = 0.13f;
+        song.tracks[4].instrument.synth.cutoff = 830.0f;
+        song.tracks[4].instrument.synth.ampRelease = 1.25f;
+        song.tracks[4].instrument.synth.engine = SynthEngine::FM;
+        song.tracks[4].patterns[0].steps[3].on = true;
+        song.tracks[4].patterns[0].steps[3].degree = 4;
+        song.tracks[4].patterns[0].steps[3].ratchet = 3;
+        song.tracks[4].patterns[0].steps[3].nudge = -0.25f;
+        song.tracks[4].patterns[0].steps[3].cond.type = TrigCondition::Type::Ratio;
+        song.tracks[4].patterns[0].steps[3].cond.hit = 2;
+        song.tracks[4].patterns[0].steps[3].cond.of = 3;
+
+        const std::string text = songToJson(song);
+        Song back;
+        std::string err;
+        const bool ok = songFromJson(text, back, err);
+        check(ok, "a saved song loads again", err);
+
+        check(back.tracks.size() == song.tracks.size(), "every track survives",
+              std::to_string(back.tracks.size()) + " tracks");
+        check(std::abs(back.bpm - song.bpm) < 1e-6 && back.barsPerLoop == song.barsPerLoop
+                  && back.key.root == song.key.root && std::abs(back.swing - song.swing) < 1e-6,
+              "tempo, key and loop length survive",
+              std::to_string(back.bpm).substr(0, 5) + " bpm");
+        check(back.name == "Round Trip" && back.tracks[0].name == "Thump"
+                  && back.tracks[0].colour == 0xff123456,
+              "names and colours survive", back.tracks[0].name);
+        check(std::abs(back.master.reverb.mix - 0.31f) < 1e-4
+                  && std::abs(back.master.delay.beats - 0.375f) < 1e-4,
+              "master effects survive", "");
+
+        // Instrument parameters go through the shared table; if that link
+        // breaks, every sound in every saved project reverts to default.
+        check(std::abs(back.tracks[0].instrument.drum.tune - 41.5f) < 0.05f
+                  && std::abs(back.tracks[0].instrument.drum.snap - 0.13f) < 1e-3,
+              "drum parameters survive",
+              std::to_string(back.tracks[0].instrument.drum.tune).substr(0, 5) + " Hz");
+        check(back.tracks[4].instrument.synth.engine == SynthEngine::FM
+                  && std::abs(back.tracks[4].instrument.synth.cutoff - 830.0f) < 1.0f
+                  && std::abs(back.tracks[4].instrument.synth.ampRelease - 1.25f) < 1e-3,
+              "synth parameters survive",
+              std::to_string(back.tracks[4].instrument.synth.cutoff).substr(0, 6) + " Hz");
+
+        const Step& s = back.tracks[4].patterns[0].steps[3];
+        check(s.on && s.degree == 4 && s.ratchet == 3 && std::abs(s.nudge + 0.25f) < 1e-4
+                  && s.cond.type == TrigCondition::Type::Ratio && s.cond.hit == 2 && s.cond.of == 3,
+              "step detail survives, conditions included",
+              "deg " + std::to_string(s.degree) + ", ratchet " + std::to_string(s.ratchet));
+
+        // Twice through must be identical to once through. If it is not, some
+        // field is being transformed on the way in or out.
+        check(songToJson(back) == text, "a second round trip changes nothing", "");
+    }
+    {
+        // What happens to files that are not ours matters as much as ours.
+        Song out = makeDefaultSong();
+        std::string err;
+        check(!songFromJson("not json at all", out, err), "rubbish is refused", err);
+        check(!songFromJson("{\"tracks\":[]}", out, err), "an empty song is refused", err);
+        check(out.tracks.size() == 6, "a refused load leaves the song alone",
+              std::to_string(out.tracks.size()) + " tracks still there");
+
+        // A file from an older version is missing whatever came later. Those
+        // fields must come back as their defaults, not as zero.
+        Song old;
+        err.clear();
+        const bool loaded = songFromJson(
+            R"({"tracks":[{"name":"Old","patterns":[{"length":16}]}]})", old, err);
+        check(loaded && old.tracks.size() == 1, "a sparse file still loads",
+              loaded ? old.tracks[0].name : err);
+        check(loaded && std::abs(old.bpm - Song{}.bpm) < 1e-9
+                  && std::abs(old.tracks[0].mixer.gain - Mixer{}.gain) < 1e-9,
+              "missing fields keep their defaults",
+              "bpm " + std::to_string(old.bpm).substr(0, 5));
+    }
+    {
+        // Project names reach the filesystem, so they are not allowed to point
+        // anywhere but the projects directory.
+        check(sanitiseProjectName("../../etc/passwd") == "etcpasswd",
+              "traversal is stripped from project names",
+              sanitiseProjectName("../../etc/passwd"));
+        check(sanitiseProjectName("C:\\Windows\\evil") == "CWindowsevil",
+              "so are drive letters and separators",
+              sanitiseProjectName("C:\\Windows\\evil"));
+        check(sanitiseProjectName("   ").empty(), "a name of only spaces is rejected", "");
+        check(sanitiseProjectName("My Track_2 - final") == "My Track_2 - final",
+              "ordinary names are left alone", sanitiseProjectName("My Track_2 - final"));
     }
 
     std::printf("\n%d checks, %d failures\n\n", checks, failures);

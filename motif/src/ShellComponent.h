@@ -22,8 +22,18 @@
 
 namespace motif {
 
-class ShellComponent : public juce::AudioAppComponent {
+class ShellComponent : public juce::AudioAppComponent,
+                       private juce::Timer {
 public:
+    /**
+     * The project the session is kept in when it has not been given a name.
+     *
+     * Written periodically and on the way out, read back on the way in.
+     * Closing the window is how people stop working, not a decision to throw
+     * away what they were doing.
+     */
+    static constexpr const char* kAutosaveName = "Autosave";
+
     ShellComponent();
     ~ShellComponent() override;
 
@@ -63,6 +73,9 @@ private:
      */
     void startAudio();
     bool audioStarted_ = false;
+
+    /** Periodic autosave, so a crash costs a minute rather than the session. */
+    void timerCallback() override;
 
     /** Notifies the shell when the interface has finished loading. */
     struct WebView;

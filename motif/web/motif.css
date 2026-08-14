@@ -113,11 +113,41 @@ section { padding:14px; overflow:auto; min-width:0; }
 .chip.ghost { color:var(--dimmer); border-style:dashed; padding:6px 10px; }
 .chip.ghost:hover { border-style:solid; }
 
+/* ---------- project ---------- */
+.project { display:flex; flex-direction:column; gap:2px; align-items:flex-start;
+           padding:6px 12px; border-radius:var(--r); border:1px solid transparent;
+           max-width:220px; transition:.12s; }
+.project:hover { border-color:var(--line); background:rgba(22,28,41,.5); }
+.project label { font-size:8.5px; letter-spacing:.14em; color:var(--dimmer); cursor:pointer; }
+.project span { font:600 13px var(--mono); color:var(--text);
+                max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
 .menu {
   position:fixed; z-index:50; min-width:172px; padding:5px;
   background:var(--ink2); border:1px solid #33405a; border-radius:9px;
   box-shadow:0 12px 34px -8px rgba(0,0,0,.8);
 }
+.menu.wide { min-width:268px; max-height:70vh; overflow-y:auto; }
+.menu-head { font:700 8.5px var(--sans); letter-spacing:.15em; color:var(--dimmer);
+             padding:8px 10px 5px; }
+.menu-row { display:flex; gap:5px; padding:0 5px 4px; }
+.menu-row input {
+  flex:1; min-width:0; padding:7px 9px; border-radius:6px;
+  background:var(--ink0); border:1px solid var(--line);
+  color:var(--text); font:12px var(--sans); outline:none;
+}
+.menu-row input:focus { border-color:var(--fitted); }
+.menu-go { padding:7px 12px; border-radius:6px; background:rgba(94,230,197,.14);
+           border:1px solid var(--fitted); color:var(--fitted);
+           font:700 9.5px var(--sans); letter-spacing:.08em; }
+.menu-go:hover { background:rgba(94,230,197,.24); }
+.menu-file { display:flex; align-items:center; gap:3px; }
+.menu-file .menu-item { flex:1; }
+.menu-del { padding:5px 8px; border-radius:5px; font:700 11px var(--sans);
+            color:var(--dimmer); }
+.menu-del:hover { color:var(--hot); background:rgba(255,92,122,.12); }
+.menu-del.armed { color:var(--hot); font-size:8.5px; letter-spacing:.08em;
+                  background:rgba(255,92,122,.16); }
 .menu-item { display:block; width:100%; text-align:left; padding:7px 10px;
              border-radius:5px; font-size:11.5px; color:var(--text); }
 .menu-item:hover:not(:disabled) { background:var(--ink3); }

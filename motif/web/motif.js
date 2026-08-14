@@ -189,6 +189,92 @@ function renderTracks() {
   });
 }
 
+// --------------------------------------------------------------------------
+// Projects
+// --------------------------------------------------------------------------
+
+/**
+ * Save, open, delete, start new.
+ *
+ * Deliberately not a native file dialog: projects live in one folder, and
+ * picking from a list of names you recognise beats navigating a filesystem to
+ * find something the app put there in the first place.
+ */
+async function openProjectMenu(anchor) {
+  closeMenu();
+  const { current, names } = await (await fetch('/api/projects')).json();
+
+  const menu = document.createElement('div');
+  menu.className = 'menu wide';
+  menu.id = 'track-menu';          // one menu at a time; shares the dismiss path
+  menu.innerHTML =
+    `<div class="menu-head">PROJECT</div>
+     <div class="menu-row">
+       <input id="proj-name" type="text" maxlength="64" placeholder="Name this project"
+              spellcheck="false">
+       <button class="menu-go" id="proj-save">SAVE</button>
+     </div>`;
+
+  const nameField = menu.querySelector('#proj-name');
+  nameField.value = current || '';
+  const save = () => {
+    const name = nameField.value.trim();
+    if (name) { api.send('save', { name }); closeMenu(); }
+  };
+  menu.querySelector('#proj-save').onclick = save;
+  nameField.onkeydown = (e) => {
+    e.stopPropagation();                     // A-K would otherwise play notes
+    if (e.key === 'Enter') save();
+    if (e.key === 'Escape') closeMenu();
+  };
+
+  if (names.length) {
+    const head = document.createElement('div');
+    head.className = 'menu-head';
+    head.textContent = 'OPEN';
+    menu.append(head);
+    for (const n of names) {
+      const row = document.createElement('div');
+      row.className = 'menu-file';
+      const open = document.createElement('button');
+      open.className = 'menu-item';
+      open.textContent = n;
+      open.onclick = () => { api.send('load', { name: n }); closeMenu(); };
+      const del = document.createElement('button');
+      del.className = 'menu-del';
+      del.textContent = '×';
+      del.title = `Delete "${n}"`;
+      // Two presses. A single-click delete next to a single-click open is a
+      // way to lose a project by aiming badly.
+      del.onclick = () => {
+        if (del.dataset.armed) { api.send('deleteProject', { name: n }); closeMenu(); return; }
+        del.dataset.armed = '1';
+        del.textContent = 'SURE?';
+        del.classList.add('armed');
+      };
+      row.append(open, del);
+      menu.append(row);
+    }
+  }
+
+  const sep = document.createElement('div');
+  sep.className = 'menu-head';
+  sep.textContent = 'START OVER';
+  const fresh = document.createElement('button');
+  fresh.className = 'menu-item';
+  fresh.textContent = 'New project';
+  fresh.onclick = () => { api.send('newSong'); closeMenu(); };
+  menu.append(sep, fresh);
+
+  document.body.append(menu);
+  const box = anchor.getBoundingClientRect();
+  menu.style.left = Math.min(box.left, innerWidth - menu.offsetWidth - 8) + 'px';
+  menu.style.top = box.bottom + 6 + 'px';
+  nameField.focus();
+  nameField.select();
+  setTimeout(() => addEventListener('pointerdown', dismissMenu), 0);
+}
+
 /** Track options, anchored to the button that opened them. */
 function openTrackMenu(index, anchor) {
   closeMenu();
@@ -672,6 +758,7 @@ function render() {
   if (track) document.documentElement.style.setProperty('--c', hex(track.colour));
   $('#keys').style.setProperty('--c', track ? hex(track.colour) : '#5ee6c5');
 
+  $('#project-name').textContent = state.name || 'Untitled';
   $('#r-bpm').textContent = state.bpm.toFixed(1);
   $('#r-cycle').textContent = state.cycle + ' st';
   $('#r-peak').textContent = pct(state.peak) + '%';
@@ -707,6 +794,7 @@ function render() {
 
 $('#play').onclick = () => api.send(state && state.playing ? 'stop' : 'play');
 $('#rec').onclick = () => api.send('record');
+$('#project').onclick = (e) => openProjectMenu(e.currentTarget);
 $('#add-drum').onclick = () => api.send('addTrack', { kind: 'drum' });
 $('#add-synth').onclick = () => api.send('addTrack', { kind: 'synth' });
 

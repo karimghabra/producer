@@ -63,6 +63,14 @@ const cmd = (body) => page.evaluate((b) => fetch('/api/command', {
 // Put the engine in a known state before asserting anything. The first run of
 // this left the transport running and track 4 armed, and the next run then
 // "failed" on both - the test was reading its own leftovers rather than a bug.
+// This run tears the song down and builds it back up, and the app now restores
+// whatever was open last time. So: put the session somewhere safe first and
+// give it back at the end, rather than costing someone their work to run a test.
+const BACKUP = 'Verify Backup';
+await cmd({ type: 'save', name: BACKUP });
+await page.waitForTimeout(300);
+
+await cmd({ type: 'newSong' });
 await cmd({ type: 'stop' });
 await cmd({ type: 'selectTrack', track: 0 });
 await page.locator('[data-view="steps"]').click();
@@ -325,6 +333,66 @@ check(now.tracks.length === startCount &&
 await cmd({ type: 'selectTrack', track: 0 });
 await page.waitForTimeout(300);
 
+// --- projects ----------------------------------------------------------------
+//
+// The one part of the app where a bug costs someone their work, so this checks
+// a project actually comes back rather than that a button was clickable.
+const PROJ = 'Verify Run';
+await cmd({ type: 'newSong' });
+await page.waitForTimeout(300);
+await cmd({ type: 'bpm', value: 143 });
+await cmd({ type: 'gain', track: 2, value: 0.42 });
+await cmd({ type: 'param', track: 4, id: 'cutoff', value: 0.2 });
+await cmd({ type: 'renameTrack', track: 1, name: 'Marker' });
+await page.waitForTimeout(350);
+
+await page.locator('#project').click();
+await page.waitForTimeout(250);
+check(await page.locator('#proj-name').isVisible(), 'project menu opens');
+await page.locator('#proj-name').fill(PROJ);
+await page.locator('#proj-save').click();
+await page.waitForTimeout(500);
+check((await engine()).name === PROJ, 'saving names the project', (await engine()).name);
+
+// Change everything, then open the save and check it comes back.
+await cmd({ type: 'newSong' });
+await page.waitForTimeout(400);
+check(Math.abs((await engine()).bpm - 143) > 1, 'new project clears what was there',
+      `${(await engine()).bpm} bpm`);
+
+await page.locator('#project').click();
+await page.waitForTimeout(300);
+await page.locator(`#track-menu .menu-item`, { hasText: PROJ }).first().click();
+await page.waitForTimeout(600);
+const reopened = await engine();
+check(Math.abs(reopened.bpm - 143) < 0.01, 'tempo comes back', `${reopened.bpm} bpm`);
+check(reopened.tracks[1].name === 'Marker', 'track names come back', reopened.tracks[1].name);
+check(Math.abs(reopened.tracks[2].mixer.gain - 0.42) < 0.005, 'mixer settings come back',
+      reopened.tracks[2].mixer.gain.toFixed(3));
+const reCut = (await page.evaluate(async () => (await fetch('/api/params?track=4')).json()))
+  .find((p) => p.id === 'cutoff');
+check(Math.abs(reCut.norm - 0.2) < 0.01, 'instrument parameters come back',
+      `cutoff ${Math.round(reCut.value)} Hz`);
+check(reopened.playing === false, 'opening a project does not leave it running');
+
+// Delete needs two presses, so a project is not lost to one bad click.
+await page.locator('#project').click();
+await page.waitForTimeout(300);
+const del = page.locator('#track-menu .menu-file', { hasText: PROJ }).locator('.menu-del');
+await del.click();
+await page.waitForTimeout(200);
+check(await del.evaluate((el) => el.classList.contains('armed')),
+      'deleting a project asks first', await del.textContent());
+await del.click();
+await page.waitForTimeout(400);
+const remaining = await page.evaluate(async () => (await fetch('/api/projects')).json());
+check(!remaining.names.includes(PROJ), 'and then deletes it',
+      remaining.names.join(',') || 'none left');
+
+await cmd({ type: 'newSong' });
+await cmd({ type: 'selectTrack', track: 0 });
+await page.waitForTimeout(350);
+
 // --- the signature feature: play, then let it work out what you meant --------
 //
 // Plays a rhythm at a known tempo through the real engine and checks the
@@ -425,6 +493,12 @@ if (shotPath) {
 
 await cmd({ type: 'stop' });
 await page.locator('[data-view="steps"]').click();
+
+// Hand the session back.
+await cmd({ type: 'load', name: BACKUP });
+await page.waitForTimeout(400);
+await cmd({ type: 'deleteProject', name: BACKUP });
+await page.waitForTimeout(200);
 
 console.log(out.join('\n'));
 const failures = out.filter((l) => l.startsWith('FAIL')).length;

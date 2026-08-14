@@ -36,6 +36,21 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(httplib)
 
+# JSON, for the project format.
+#
+# The interface payloads are written by hand - they are one-way and shaped by
+# what the UI needs. A saved project has to be read back as well as written,
+# and hand-rolling a parser is where a file format quietly starts losing
+# people's work.
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.3
+    GIT_SHALLOW TRUE
+)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+FetchContent_MakeAvailable(nlohmann_json)
+
 # WebView2 headers and import library.
 #
 # JUCE looks for a NuGet package on disk. A .nupkg is a zip, so fetching and
@@ -76,6 +91,7 @@ target_sources(Motif PRIVATE
     src/music/Song.cpp
     src/music/Presets.cpp
     src/music/Params.cpp
+    src/music/Project.cpp
     src/net/Bridge.cpp
 )
 
@@ -107,6 +123,7 @@ target_compile_definitions(Motif PRIVATE
 
 target_link_libraries(Motif PRIVATE
     httplib::httplib
+    nlohmann_json::nlohmann_json
     juce::juce_audio_utils
     juce::juce_audio_devices
     juce::juce_gui_extra
@@ -130,10 +147,12 @@ add_executable(MotifTests
     src/music/Song.cpp
     src/music/Presets.cpp
     src/music/Params.cpp
+    src/music/Project.cpp
     src/audio/Drums.cpp
     src/audio/Engine.cpp
 )
 target_include_directories(MotifTests PRIVATE src)
+target_link_libraries(MotifTests PRIVATE nlohmann_json::nlohmann_json)
 
 enable_testing()
 add_test(NAME quantizer COMMAND MotifTests)

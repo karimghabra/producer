@@ -11,6 +11,7 @@
 #include "audio/Engine.h"
 #include "music/Params.h"
 #include "music/Presets.h"
+#include "music/Project.h"
 #include "music/Song.h"
 
 namespace motif {
@@ -124,6 +125,7 @@ std::string Bridge::stateJson() const {
       << ",\"reduction\":" << num(engine_.limiterReduction())
       << ",\"cycle\":" << song.polymeterCycle()
       << ",\"sidechainSource\":" << song.sidechainSource
+      << ",\"name\":\"" << esc(song.name) << "\""
       << ",\"key\":{\"root\":" << song.key.root
       << ",\"scale\":\"" << esc(theory::scaleName(song.key.scale)) << "\"}"
       << ",\"master\":{"
@@ -432,6 +434,45 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
     }
     // --- track manager ----------------------------------------------------
 
+    // --- projects ---------------------------------------------------------
+
+    if (type == "save") {
+        std::string name;
+        field(body, "name", name);
+        if (name.empty()) name = engine_.song().name;
+        if (!saveProject(name, engine_.song(), error)) return false;
+        engine_.editSong([&](Song& s) { s.name = sanitiseProjectName(name); });
+        return true;
+    }
+
+    if (type == "load") {
+        std::string name;
+        if (!field(body, "name", name)) { error = "missing name"; return false; }
+        Song loaded;
+        if (!loadProject(name, loaded, error)) return false;
+        engine_.setPlaying(false);
+        engine_.setSong(loaded);
+        { std::lock_guard<std::mutex> lock(takeMutex_);
+          take_ = {}; takeTrack_ = takePattern_ = -1; ++takeRev_; }
+        return true;
+    }
+
+    if (type == "deleteProject") {
+        std::string name;
+        if (!field(body, "name", name)) { error = "missing name"; return false; }
+        if (!deleteProject(name)) { error = "could not delete \"" + name + "\""; return false; }
+        return true;
+    }
+
+    if (type == "renameSong") {
+        std::string name;
+        if (!field(body, "name", name)) { error = "missing name"; return false; }
+        const std::string safe = sanitiseProjectName(name);
+        if (safe.empty()) { error = "that name has no usable characters in it"; return false; }
+        engine_.editSong([&](Song& s) { s.name = safe; });
+        return true;
+    }
+
     if (type == "newSong") {
         engine_.setSong(makeDefaultSong());
         { std::lock_guard<std::mutex> lock(takeMutex_);
@@ -688,6 +729,18 @@ int Bridge::start(const std::string& webRoot, int preferredPort) {
         res.set_content(j.str(), "application/json");
     });
 
+    server_->Get("/api/projects", [this](const httplib::Request&, httplib::Response& res) {
+        std::ostringstream j;
+        j << "{\"current\":\"" << esc(engine_.song().name) << "\",\"names\":[";
+        const auto names = listProjects();
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (i) j << ',';
+            j << '"' << esc(names[i]) << '"';
+        }
+        j << "]}";
+        res.set_content(j.str(), "application/json");
+    });
+
     server_->Get("/api/presets", [](const httplib::Request&, httplib::Response& res) {
         std::ostringstream j;
         j << "{\"drums\":[";
@@ -714,6 +767,28 @@ int Bridge::start(const std::string& webRoot, int preferredPort) {
         res.status = ok ? 200 : 400;
         res.set_content(ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"" + esc(error) + "\"}",
                         "application/json");
+    });
+
+    // Take the port exclusively, or not at all.
+    //
+    // The default is SO_REUSEADDR, and on Windows that lets a second process
+    // bind a port another process is already listening on. Both binds report
+    // success and Windows then splits incoming connections between them - so
+    // two copies of Motif each answered half the requests from their own
+    // engine, and the interface showed two different songs alternating at the
+    // poll rate. Refusing the bind instead sends the second copy to another
+    // port, where it is merely a second window rather than a haunting.
+    server_->set_socket_options([](auto sock) {
+#ifdef _WIN32
+        const int yes = 1;
+        ::setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                     reinterpret_cast<const char*>(&yes), sizeof(yes));
+#else
+        // Elsewhere SO_REUSEADDR does not permit stealing a live listener, and
+        // it is wanted: without it the port stays unusable through TIME_WAIT.
+        const int yes = 1;
+        ::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#endif
     });
 
     // Bind before listening, so the port is known up front.

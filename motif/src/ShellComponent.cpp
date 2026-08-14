@@ -1,5 +1,6 @@
 #include "ShellComponent.h"
 
+#include "music/Project.h"
 #include "music/Song.h"
 
 #if JUCE_WINDOWS
@@ -11,7 +12,15 @@ namespace motif {
 ShellComponent::ShellComponent() {
     setSize(1280, 820);
 
-    engine_.setSong(makeDefaultSong());
+    // Pick up where the last session left off.
+    //
+    // Closing the window is how people stop working, not a decision to discard
+    // what they were doing. The autosave is written on the way out and read
+    // back here; if there is not one yet, the starter kit.
+    Song restored;
+    std::string ignored;
+    if (loadProject(kAutosaveName, restored, ignored)) engine_.setSong(restored);
+    else                                               engine_.setSong(makeDefaultSong());
 
     // Interface first, audio second.
     //
@@ -42,6 +51,12 @@ ShellComponent::ShellComponent() {
 }
 
 ShellComponent::~ShellComponent() {
+    stopTimer();
+
+    // Before anything is torn down, while the song is still whole.
+    std::string ignored;
+    saveProject(kAutosaveName, engine_.song(), ignored);
+
     web_.reset();
     bridge_.stop();
     shutdownAudio();
@@ -60,6 +75,12 @@ void ShellComponent::startAudio() {
     if (audioStarted_) return;
     audioStarted_ = true;
     setAudioChannels(0, 2);
+    startTimer(60000);
+}
+
+void ShellComponent::timerCallback() {
+    std::string ignored;
+    saveProject(kAutosaveName, engine_.song(), ignored);
 }
 
 /**
