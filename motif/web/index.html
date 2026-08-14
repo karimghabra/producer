@@ -29,6 +29,7 @@
       <div><label>PEAK</label><span id="r-peak">--</span></div>
     </div>
     <div id="link" class="link"></div>
+    <div id="flash" class="flash"></div>
   </header>
 
   <main>
@@ -48,10 +49,15 @@
       <div id="view-grid" class="view on">
         <div id="grid-ruler" class="grid-ruler"></div>
         <div id="grid-rows" class="grid-rows"></div>
+        <!-- What can be done to a selection. Shortcuts are faster, but a
+             feature reachable only by a key combination is one most people
+             never find. -->
+        <div id="grid-tools" class="grid-tools"></div>
         <div class="grid-legend">
-          Click any step on any track &nbsp;|&nbsp; drag a note up or down to
-          retune it &nbsp;|&nbsp; the faded cells are the pattern repeating, so
-          tracks of different lengths show where they drift apart
+          Click a step &nbsp;|&nbsp; drag a note up or down to retune it
+          &nbsp;|&nbsp; shift-drag to select a block &nbsp;|&nbsp; the faded
+          cells are the pattern repeating, so tracks of different lengths show
+          where they drift apart
         </div>
       </div>
 

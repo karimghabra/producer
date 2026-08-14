@@ -647,6 +647,117 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
         return true;
     }
 
+    // --- working on many steps at once --------------------------------------
+    //
+    // A selection is edited as one command rather than one per cell. Sixty
+    // round trips to transpose a bar would be slow, would land out of order,
+    // and would leave the pattern half-changed if any of them were lost.
+    //
+    // "track:step,track:step,..." - a selection is a lot of small pairs, and a
+    // nested array would need a real parser on this side.
+    auto forEachCell = [&](const std::string& list, auto fn) {
+        engine_.editSong([&](Song& s) {
+            size_t pos = 0;
+            while (pos < list.size()) {
+                const size_t colon = list.find(':', pos);
+                if (colon == std::string::npos) break;
+                const size_t comma = list.find(',', colon);
+                const int t = std::atoi(list.substr(pos, colon - pos).c_str());
+                const int step = std::atoi(list.substr(colon + 1,
+                    comma == std::string::npos ? std::string::npos : comma - colon - 1).c_str());
+                if (t >= 0 && t < int(s.tracks.size())) {
+                    Track& track = s.tracks[size_t(t)];
+                    if (Pattern* p = track.current())
+                        if (step >= 0 && step < int(p->steps.size()))
+                            fn(p->steps[size_t(step)], track);
+                }
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+        });
+    };
+
+    if (type == "cells") {
+        std::string op, list;
+        if (!field(body, "op", op)) { error = "missing op"; return false; }
+        field(body, "cells", list);
+        if (list.empty()) return true;
+        const int delta = intField(body, "value", 0);
+
+        if      (op == "on")     forEachCell(list, [](Step& s, Track&) { s.on = true; });
+        else if (op == "off")    forEachCell(list, [](Step& s, Track&) { s.on = false; });
+        else if (op == "toggle") forEachCell(list, [](Step& s, Track&) { s.on = !s.on; });
+        else if (op == "accent") forEachCell(list, [](Step& s, Track&) { s.accent = !s.accent; });
+        // Relative, not absolute: nudging a selection should keep the shape it
+        // already has rather than flatten everything to one value.
+        else if (op == "deg")    forEachCell(list, [&](Step& s, Track& t) {
+            if (!t.instrument.isDrum) s.degree = std::clamp(s.degree + delta, -14, 14); });
+        else if (op == "oct")    forEachCell(list, [&](Step& s, Track& t) {
+            if (!t.instrument.isDrum) s.octave = std::clamp(s.octave + delta, -3, 3); });
+        else if (op == "vel")    forEachCell(list, [&](Step& s, Track&) {
+            s.velocity = std::clamp(s.velocity + float(delta) * 0.05f, 0.0f, 1.0f); });
+        else if (op == "ratchet") forEachCell(list, [&](Step& s, Track&) {
+            s.ratchet = std::clamp(s.ratchet + delta, 1, 8); });
+        else if (op == "nudge")  forEachCell(list, [&](Step& s, Track&) {
+            s.nudge = std::clamp(s.nudge + float(delta) * 0.05f, -0.5f, 0.5f); });
+        else { error = "unknown cell op: " + op; return false; }
+        return true;
+    }
+
+    /**
+     * Paste steps at an anchor.
+     *
+     * The payload holds each step's offset from the top-left of what was
+     * copied, so the same clipboard lands correctly wherever it is put down.
+     * "dTrack:dStep:vel:deg:oct:len:ratchet;..."
+     */
+    if (type == "pasteCells") {
+        const int anchorTrack = intField(body, "track", 0);
+        const int anchorStep = intField(body, "step", 0);
+        std::string data;
+        if (!field(body, "data", data)) { error = "missing data"; return false; }
+
+        engine_.editSong([&](Song& s) {
+            size_t pos = 0;
+            while (pos < data.size()) {
+                const size_t end = data.find(';', pos);
+                const std::string one = data.substr(pos, end == std::string::npos
+                                                        ? std::string::npos : end - pos);
+                int f[7] = { 0, 0, 80, 0, 0, 1, 1 };
+                size_t p = 0;
+                for (int i = 0; i < 7 && p <= one.size(); ++i) {
+                    const size_t c = one.find(':', p);
+                    f[i] = std::atoi(one.substr(p, c == std::string::npos
+                                                   ? std::string::npos : c - p).c_str());
+                    if (c == std::string::npos) break;
+                    p = c + 1;
+                }
+                const int t = anchorTrack + f[0];
+                const int step = anchorStep + f[1];
+                if (t >= 0 && t < int(s.tracks.size())) {
+                    Track& track = s.tracks[size_t(t)];
+                    if (Pattern* pat = track.current()) {
+                        // Silently dropped rather than wrapped: a paste that
+                        // runs off the end should lose the overhang, not
+                        // reappear at the start of the bar.
+                        if (step >= 0 && step < int(pat->steps.size())) {
+                            Step& dst = pat->steps[size_t(step)];
+                            dst.on = true;
+                            dst.velocity = std::clamp(float(f[2]) / 100.0f, 0.0f, 1.0f);
+                            dst.degree = std::clamp(f[3], -14, 14);
+                            dst.octave = std::clamp(f[4], -3, 3);
+                            dst.length = std::clamp(f[5], 1, 32);
+                            dst.ratchet = std::clamp(f[6], 1, 8);
+                        }
+                    }
+                }
+                if (end == std::string::npos) break;
+                pos = end + 1;
+            }
+        });
+        return true;
+    }
+
     if (type == "patternLength") {
         onTrack([&](Track& t, Song&) {
             if (auto* p = t.current()) p->resize(std::clamp(intField(body, "value", 16), 1, 64));

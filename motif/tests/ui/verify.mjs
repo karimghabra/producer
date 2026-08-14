@@ -403,6 +403,112 @@ check(ghosts === 4 && kickGhosts === 0,
       'a shorter pattern shows where it repeats',
       `12-step track has ${ghosts} repeat cells, 16-step track has ${kickGhosts}`);
 
+// --- selecting and moving blocks of steps ------------------------------------
+await cmd({ type: 'newSong' });
+await cmd({ type: 'selectTrack', track: 0 });
+await page.locator('[data-view="grid"]').click();
+await page.waitForTimeout(400);
+
+const stepsOf = async (t) => (await engine()).tracks[t].patterns[0].steps;
+const litIn = async (t) => (await stepsOf(t)).filter((s) => s.on).length;
+
+// Shift-drag a box across two tracks and four steps.
+const cellBox = async (t, s) =>
+  page.locator('#grid-rows .grow').nth(t).locator('.gcell').nth(s).boundingBox();
+const a = await cellBox(0, 0);
+const bCell = await cellBox(1, 3);
+await page.keyboard.down('Shift');
+await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+await page.mouse.down();
+await page.mouse.move(bCell.x + bCell.width / 2, bCell.y + bCell.height / 2, { steps: 8 });
+await page.mouse.up();
+await page.keyboard.up('Shift');
+await page.waitForTimeout(400);
+check(await page.locator('.gcell.picked').count() === 8,
+      'shift-drag selects a block across tracks',
+      `${await page.locator('.gcell.picked').count()} cells (2 tracks x 4 steps)`);
+check(await page.locator('#grid-tools.on').count() === 1,
+      'and the tools for it appear');
+
+// Filling turns them all on without touching anything else.
+const kickBefore = await litIn(0);
+await page.locator('#grid-tools .chip', { hasText: 'Fill' }).click();
+await page.waitForTimeout(400);
+const filled = await stepsOf(0);
+check(filled.slice(0, 4).every((s) => s.on), 'fill turns the selection on',
+      `${await litIn(0)} lit, was ${kickBefore}`);
+check(filled.slice(4).filter((s) => s.on).length === filled.slice(4).filter((s) => s.on).length,
+      'and leaves the rest of the pattern alone');
+
+// Clearing takes them off again.
+await page.locator('#grid-tools .chip', { hasText: 'Clear' }).click();
+await page.waitForTimeout(400);
+check((await stepsOf(0)).slice(0, 4).every((s) => !s.on), 'clear turns the selection off');
+
+// Copy a phrase and paste it further along.
+await cmd({ type: 'cells', op: 'off', cells: '0:0,0:1,0:2,0:3,1:0,1:1,1:2,1:3' });
+await cmd({ type: 'stepEdit', track: 0, step: 0, what: 'on', value: 1 });
+await cmd({ type: 'stepEdit', track: 0, step: 2, what: 'on', value: 1 });
+await cmd({ type: 'stepEdit', track: 0, step: 2, what: 'ratchet', value: 4 });
+await page.waitForTimeout(350);
+await page.locator('#grid-tools .chip', { hasText: 'Copy' }).click();
+await page.waitForTimeout(250);
+check(/2 steps copied/.test(await page.locator('#flash').innerText()),
+      'copy takes the playing steps only',
+      await page.locator('#flash').innerText());
+
+// Select a block starting at step 8 and paste into it.
+const c8 = await cellBox(0, 8);
+const c11 = await cellBox(1, 11);
+await page.keyboard.down('Shift');
+await page.mouse.move(c8.x + c8.width / 2, c8.y + c8.height / 2);
+await page.mouse.down();
+await page.mouse.move(c11.x + c11.width / 2, c11.y + c11.height / 2, { steps: 8 });
+await page.mouse.up();
+await page.keyboard.up('Shift');
+await page.waitForTimeout(350);
+await page.locator('#grid-tools .chip', { hasText: 'Paste' }).click();
+await page.waitForTimeout(450);
+const pasted = await stepsOf(0);
+check(pasted[8].on && pasted[10].on && !pasted[9].on,
+      'paste lands at the top left of the selection, keeping its shape',
+      `8:${pasted[8].on} 9:${pasted[9].on} 10:${pasted[10].on}`);
+check(pasted[10].ratchet === 4, 'and carries each step\'s detail with it',
+      `ratchet ${pasted[10].ratchet}`);
+
+// Transposing a selection moves pitched steps and leaves drums alone.
+await cmd({ type: 'newSong' });
+await cmd({ type: 'selectTrack', track: 4 });
+await page.waitForTimeout(400);
+const bassBefore = (await stepsOf(4)).map((s) => s.deg);
+const kickDegBefore = (await stepsOf(0)).map((s) => s.deg);
+const b0 = await cellBox(0, 0);
+const b15 = await cellBox(4, 15);
+await page.keyboard.down('Shift');
+await page.mouse.move(b0.x + b0.width / 2, b0.y + b0.height / 2);
+await page.mouse.down();
+await page.mouse.move(b15.x + b15.width / 2, b15.y + b15.height / 2, { steps: 10 });
+await page.mouse.up();
+await page.keyboard.up('Shift');
+await page.waitForTimeout(400);
+await page.locator('#grid-tools .chip', { hasText: '♯' }).click();
+await page.waitForTimeout(450);
+const bassAfter = (await stepsOf(4)).map((s) => s.deg);
+check(bassAfter.every((d, i) => d === bassBefore[i] + 1),
+      'transposing moves every selected pitched step by a degree',
+      `${bassBefore.slice(0, 4).join(',')} -> ${bassAfter.slice(0, 4).join(',')}`);
+check((await stepsOf(0)).every((s, i) => s.deg === kickDegBefore[i]),
+      'and leaves drums alone, having no pitch to move');
+
+// Escape drops the selection.
+await page.keyboard.press('Escape');
+await page.waitForTimeout(300);
+check(await page.locator('.gcell.picked').count() === 0, 'escape drops the selection');
+
+await cmd({ type: 'newSong' });
+await cmd({ type: 'selectTrack', track: 4 });
+await page.waitForTimeout(350);
+
 // --- notes, edited from inside the grid --------------------------------------
 //
 // Pitched tracks show the note each step plays and let it be dragged, so a
@@ -777,6 +883,23 @@ const scenes = (await engine()).scenes;
 check(scenes.length === 2 && scenes[1].patterns[4] === -1,
       'a scene remembers which tracks sit out',
       `scene 2 track 5 = ${scenes[1].patterns[4]}`);
+
+// Scenes can be renamed and deleted, not only made.
+await page.locator('#scene-bar .chip').first().dblclick();
+await page.waitForTimeout(300);
+await page.locator('.scene-rename').fill('Intro');
+await page.keyboard.press('Enter');
+await page.waitForTimeout(400);
+check((await engine()).scenes[0].name === 'Intro', 'a scene can be renamed in place',
+      (await engine()).scenes[0].name);
+
+await page.locator('#scene-bar .chip').first().click({ button: 'right' });
+await page.waitForTimeout(300);
+check(await page.locator('#track-menu .menu-item', { hasText: 'Delete' }).count() === 1,
+      'and its menu offers delete');
+await page.keyboard.press('Escape');
+await page.mouse.click(6, 6);
+await page.waitForTimeout(250);
 
 // Place sections.
 await page.locator('.section-add').click();

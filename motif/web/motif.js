@@ -41,6 +41,21 @@ const pct = (v) => Math.round(v * 100);
 const esc = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/**
+ * Say what just happened, briefly.
+ *
+ * Copy, cut and paste change nothing you can see at the moment you do them,
+ * and a shortcut that appears to do nothing is one you stop trusting.
+ */
+let flashTimer = null;
+function flash(text) {
+  const el = $('#flash');
+  el.textContent = text;
+  el.classList.add('on');
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => el.classList.remove('on'), 1400);
+}
+
 /** Matches the palette the engine hands to new tracks. */
 const TRACK_COLOURS = ['#ff5c7a', '#ffb86b', '#5ee6c5', '#ffd479',
                        '#c77dff', '#6ba8ff', '#8fe36b', '#ff8fd4'];
@@ -831,6 +846,92 @@ function openRateMenu(trackIndex, anchor) {
   setTimeout(() => addEventListener('pointerdown', dismissMenu), 0);
 }
 
+// --------------------------------------------------------------------------
+// Selection
+//
+// A set of cells, held as "track:step". Editing one step at a time is fine for
+// fixing a hi-hat and hopeless for moving a whole phrase, so everything that
+// operates on a selection sends one command for the lot: sixty round trips to
+// transpose a bar would be slow, would land out of order, and would leave the
+// pattern half-changed if any of them went missing.
+// --------------------------------------------------------------------------
+
+let selection = new Set();
+let selectAnchor = null;        // where a shift-range measures from
+let clipboard = [];             // copied steps, as offsets from their top-left
+
+const cellKey = (track, step) => `${track}:${step}`;
+const cellList = () => [...selection].join(',');
+const isSelected = (track, step) => selection.has(cellKey(track, step));
+
+function clearSelection() {
+  if (!selection.size) return;
+  selection.clear();
+  lastShape = null;
+  render();
+}
+
+/** Every cell in the rectangle between two corners. */
+function selectBox(a, b) {
+  const t0 = Math.min(a.track, b.track), t1 = Math.max(a.track, b.track);
+  const s0 = Math.min(a.step, b.step), s1 = Math.max(a.step, b.step);
+  const next = new Set();
+  for (let t = t0; t <= t1; t++) {
+    const pat = state.tracks[t]?.patterns[state.tracks[t].activePattern];
+    if (!pat) continue;
+    for (let s = s0; s <= s1; s++) if (s < pat.length) next.add(cellKey(t, s));
+  }
+  return next;
+}
+
+/** The selection's top-left, which is what a paste is measured against. */
+function selectionOrigin() {
+  let track = Infinity, step = Infinity;
+  for (const key of selection) {
+    const [t, s] = key.split(':').map(Number);
+    track = Math.min(track, t);
+    step = Math.min(step, s);
+  }
+  return Number.isFinite(track) ? { track, step } : null;
+}
+
+function copySelection() {
+  const origin = selectionOrigin();
+  if (!origin) return 0;
+  clipboard = [];
+  for (const key of selection) {
+    const [t, s] = key.split(':').map(Number);
+    const pat = state.tracks[t]?.patterns[state.tracks[t].activePattern];
+    const step = pat?.steps[s];
+    // Only what is on: copying silence would paste holes over whatever is
+    // already there, which is not what copying a phrase means.
+    if (!step?.on) continue;
+    clipboard.push({
+      dt: t - origin.track, ds: s - origin.step,
+      vel: Math.round(step.vel * 100), deg: step.deg, oct: step.oct,
+      len: step.len, ratchet: step.ratchet,
+    });
+  }
+  return clipboard.length;
+}
+
+function pasteAt(track, step) {
+  if (!clipboard.length) return;
+  const data = clipboard
+    .map((c) => [c.dt, c.ds, c.vel, c.deg, c.oct, c.len, c.ratchet].join(':'))
+    .join(';');
+  api.send('pasteCells', { track, step, data });
+}
+
+/** Everything a selection can be told to do. */
+const selectionOps = {
+  clear: () => api.send('cells', { op: 'off', cells: cellList() }),
+  fill: () => api.send('cells', { op: 'on', cells: cellList() }),
+  toggle: () => api.send('cells', { op: 'toggle', cells: cellList() }),
+  accent: () => api.send('cells', { op: 'accent', cells: cellList() }),
+  nudge: (what, value) => api.send('cells', { op: what, value, cells: cellList() }),
+};
+
 /** How many columns to draw: the longest pattern, within reason. */
 function gridColumns() {
   const lengths = state.tracks.map((t) => t.patterns[t.activePattern]?.length ?? 16);
@@ -890,6 +991,7 @@ function renderGrid() {
 
   const host = $('#grid-rows');
   host.innerHTML = '';
+  attachBoxSelect(host);
 
   state.tracks.forEach((t, ti) => {
     const pat = t.patterns[t.activePattern];
@@ -971,13 +1073,38 @@ function renderGrid() {
                      + `<span class="note">${noteName(midi)}</span>`;
       }
 
+      el.dataset.t = String(ti);
+      el.dataset.s = String(step);
+      if (isSelected(ti, step)) el.classList.add('picked');
+
       el.title = pitched && s?.on
-        ? `${t.name} - step ${step + 1}, ${noteName(stepNote(s))}\nDrag up or down to change the note`
-        : `${t.name} - step ${step + 1}`;
+        ? `${t.name} - step ${step + 1}, ${noteName(stepNote(s))}`
+          + '\nDrag up or down to change the note'
+          + '\nShift-drag across the grid to select'
+        : `${t.name} - step ${step + 1}\nShift-drag across the grid to select`;
 
       if (pitched) attachPitchDrag(el, ti, step, s);
-      el.onclick = () => {
+      el.onclick = (e) => {
         if (el.dataset.dragged) { delete el.dataset.dragged; return; }
+
+        // Ctrl adds or removes one cell; shift takes everything between here
+        // and where the selection started. Neither of them edits the step -
+        // choosing what to work on and changing it are separate acts.
+        if (e.ctrlKey || e.metaKey) {
+          const key = cellKey(ti, step);
+          if (selection.has(key)) selection.delete(key);
+          else { selection.add(key); selectAnchor = { track: ti, step }; }
+          lastShape = null; render();
+          return;
+        }
+        if (e.shiftKey) {
+          selection = selectBox(selectAnchor ?? { track: ti, step }, { track: ti, step });
+          lastShape = null; render();
+          return;
+        }
+
+        selection.clear();
+        selectAnchor = { track: ti, step };
         api.send('toggleStep', { track: ti, step });
         // Editing a track is a statement about which one you are working on.
         if (ti !== selected) { selected = ti; api.send('selectTrack', { track: ti }); }
@@ -989,6 +1116,124 @@ function renderGrid() {
     }
     row.append(cells);
     host.append(row);
+  });
+
+  renderSelectionBar();
+}
+
+/**
+ * What you can do to a selection, spelled out.
+ *
+ * The shortcuts are the fast way, but a feature reachable only by a key
+ * combination you have to already know is a feature most people never find.
+ */
+function renderSelectionBar() {
+  const host = $('#grid-tools');
+  const n = selection.size;
+  host.classList.toggle('on', n > 0);
+  if (!n) {
+    host.innerHTML = '<span class="tools-hint">Shift-drag to select &nbsp;·&nbsp; '
+      + 'Ctrl-click to add one &nbsp;·&nbsp; Ctrl-A for everything</span>';
+    return;
+  }
+
+  const lit = [...selection].filter((key) => {
+    const [t, s] = key.split(':').map(Number);
+    const pat = state.tracks[t]?.patterns[state.tracks[t].activePattern];
+    return pat?.steps[s]?.on;
+  }).length;
+
+  host.innerHTML = `<span class="tools-count">${n} selected<b>${lit} playing</b></span>`;
+  const button = (label, title, fn, cls = '') => {
+    const b = document.createElement('button');
+    b.className = 'chip tiny ' + cls;
+    b.textContent = label;
+    b.title = title;
+    b.onclick = fn;
+    host.append(b);
+  };
+
+  button('Fill', 'Turn every selected step on', selectionOps.fill);
+  button('Clear', 'Turn every selected step off  ·  Delete', selectionOps.clear);
+  button('Copy', 'Copy the playing steps  ·  Ctrl+C',
+         () => flash(`${copySelection()} steps copied`));
+  button('Paste', 'Paste at the top left of the selection  ·  Ctrl+V', () => {
+    const at = selectionOrigin();
+    if (at) { pasteAt(at.track, at.step); flash(`pasted ${clipboard.length} steps`); }
+  });
+  button('Double', 'Copy this and place it immediately after  ·  Ctrl+D', () => {
+    const origin = selectionOrigin();
+    if (!origin) return;
+    const width = Math.max(...[...selection].map((c) => Number(c.split(':')[1]))) - origin.step + 1;
+    copySelection();
+    pasteAt(origin.track, origin.step + width);
+    flash(`duplicated ${clipboard.length} steps`);
+  });
+  button('♯', 'Up a scale degree  ·  Up arrow', () => selectionOps.nudge('deg', 1));
+  button('♭', 'Down a scale degree  ·  Down arrow', () => selectionOps.nudge('deg', -1));
+  button('Vel +', 'Louder  ·  Ctrl+Up', () => selectionOps.nudge('vel', 1));
+  button('Vel −', 'Quieter  ·  Ctrl+Down', () => selectionOps.nudge('vel', -1));
+  button('Done', 'Drop the selection  ·  Escape', clearSelection, 'ghost');
+}
+
+/**
+ * Shift-drag a box across the grid to select what is inside it.
+ *
+ * Shift rather than a plain drag, because a plain vertical drag on a pitched
+ * step already means "retune this note" - and a gesture that means two things
+ * depending on where it started is a gesture you have to think about.
+ *
+ * Cells are found by hit testing rather than by arithmetic, so the selection
+ * follows whatever the grid actually looks like: different pattern lengths,
+ * repeats, tracks of different rates.
+ */
+function attachBoxSelect(host) {
+  if (host.dataset.boxed === '1') return;
+  host.dataset.boxed = '1';
+
+  const cellAt = (x, y) => {
+    const el = document.elementFromPoint(x, y);
+    const cell = el?.closest?.('.gcell');
+    if (!cell || cell.dataset.t === undefined) return null;
+    return { track: Number(cell.dataset.t), step: Number(cell.dataset.s) };
+  };
+
+  host.addEventListener('pointerdown', (e) => {
+    if (!e.shiftKey || e.button !== 0) return;
+    const from = cellAt(e.clientX, e.clientY);
+    if (!from) return;
+    e.preventDefault();
+    interacting = true;
+    selectAnchor = from;
+
+    const box = document.createElement('div');
+    box.className = 'select-box';
+    document.body.append(box);
+    const x0 = e.clientX, y0 = e.clientY;
+
+    const move = (ev) => {
+      box.style.left = Math.min(x0, ev.clientX) + 'px';
+      box.style.top = Math.min(y0, ev.clientY) + 'px';
+      box.style.width = Math.abs(ev.clientX - x0) + 'px';
+      box.style.height = Math.abs(ev.clientY - y0) + 'px';
+      const to = cellAt(ev.clientX, ev.clientY);
+      if (!to) return;
+      selection = selectBox(from, to);
+      // Painted directly rather than through a rebuild: the grid must not be
+      // torn down while a pointer is captured over it.
+      document.querySelectorAll('#grid-rows .gcell').forEach((c) =>
+        c.classList.toggle('picked', isSelected(Number(c.dataset.t), Number(c.dataset.s))));
+    };
+    const up = () => {
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      box.remove();
+      interacting = false;
+      lastShape = null;
+      render();
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
   });
 }
 
@@ -1094,12 +1339,13 @@ function renderSceneBar() {
     b.className = 'chip';
     const playing = sc.patterns.filter((p) => p >= 0).length;
     b.innerHTML = `${esc(sc.name)} <span class="chip-sub">${playing}</span>`;
-    b.title = `Load this scene onto the tracks so you can edit it.\n`
-      + `Right-click to update it from what is playing now.\n\n`
+    b.title = 'Load this scene onto the tracks so you can edit it.\n'
+      + 'Double-click to rename, right-click for more.\n\n'
       + state.tracks.map((t, ti) => `${t.name}: ${sc.patterns[ti] >= 0
           ? (t.patterns[sc.patterns[ti]]?.name ?? '?') : 'silent'}`).join('\n');
     b.onclick = () => api.send('recallScene', { scene: i });
-    b.oncontextmenu = (e) => { e.preventDefault(); api.send('updateScene', { scene: i }); };
+    b.ondblclick = (e) => { e.preventDefault(); renameScene(i, b); };
+    b.oncontextmenu = (e) => { e.preventDefault(); openSceneMenu(i, b); };
     host.append(b);
   });
 
@@ -1121,6 +1367,66 @@ function renderSceneBar() {
     mode.onclick = () => api.send('songMode', { value: state.songMode ? 0 : 1 });
     host.append(mode);
   }
+}
+
+/** Rename a scene where it sits, the same as a track. */
+function renameScene(index, chip) {
+  const current = state.scenes[index].name;
+  const editor = document.createElement('input');
+  editor.type = 'text';
+  editor.className = 'scene-rename';
+  editor.value = current;
+  editor.maxLength = 24;
+  chip.replaceWith(editor);
+  interacting = true;
+  editor.focus();
+  editor.select();
+
+  const done = (keep) => {
+    interacting = false;
+    const name = editor.value.trim();
+    if (keep && name && name !== current) api.send('renameScene', { scene: index, name });
+    lastShape = null;
+    render();
+  };
+  editor.onblur = () => done(true);
+  editor.onkeydown = (e) => {
+    e.stopPropagation();                        // or A-K would play notes
+    if (e.key === 'Enter') done(true);
+    if (e.key === 'Escape') done(false);
+  };
+}
+
+/** Update, rename, delete. */
+function openSceneMenu(index, anchor) {
+  closeMenu();
+  const usedBy = state.arrangement.filter((s) => s.scene === index).length;
+  const menu = document.createElement('div');
+  menu.className = 'menu';
+  menu.id = 'track-menu';
+
+  const item = (label, title, fn, cls = '') => {
+    const b = document.createElement('button');
+    b.className = 'menu-item ' + cls;
+    b.textContent = label;
+    b.title = title;
+    b.onclick = () => { fn(); closeMenu(); };
+    menu.append(b);
+  };
+
+  item('Update from what is playing',
+       'Replace this scene with the patterns currently selected on each track',
+       () => api.send('updateScene', { scene: index }));
+  item('Rename', 'Also on double-click', () => renameScene(index, anchor));
+  item(usedBy ? `Delete — used by ${usedBy} section${usedBy === 1 ? '' : 's'}` : 'Delete',
+       usedBy ? 'Those sections are removed with it' : 'Nothing in the arrangement uses this',
+       () => api.send('removeScene', { scene: index }), 'danger');
+
+  document.body.append(menu);
+  const box = anchor.getBoundingClientRect();
+  menu.style.left = Math.min(box.left, innerWidth - menu.offsetWidth - 8) + 'px';
+  menu.style.top = box.bottom + 4 + 'px';
+  setTimeout(() => addEventListener('pointerdown', dismissMenu), 0);
 }
 
 /** Sections laid end to end, to scale, with the playhead running through. */
@@ -2326,6 +2632,72 @@ addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, [contenteditable="true"]')) return;
 
   const k = e.key.toLowerCase();
+
+  // Selection shortcuts come first, and anything with a modifier never plays
+  // a note - otherwise copying a phrase would also sound one.
+  if (e.ctrlKey || e.metaKey) {
+    if (k === 'c') { e.preventDefault(); flash(`${copySelection()} steps copied`); return; }
+    if (k === 'x') {
+      e.preventDefault();
+      const n = copySelection();
+      selectionOps.clear();
+      flash(`${n} steps cut`);
+      return;
+    }
+    if (k === 'v') {
+      e.preventDefault();
+      const at = selectionOrigin() ?? { track: selected, step: selectedStep };
+      pasteAt(at.track, at.step);
+      flash(`pasted ${clipboard.length} steps`);
+      return;
+    }
+    if (k === 'a') {
+      e.preventDefault();
+      const cols = gridColumns();
+      selection = selectBox({ track: 0, step: 0 },
+                            { track: state.tracks.length - 1, step: cols - 1 });
+      lastShape = null; render();
+      flash(`${selection.size} steps selected`);
+      return;
+    }
+    if (k === 'd') {
+      // Duplicate to the right of what is selected: the usual way a bar of
+      // drums becomes two.
+      e.preventDefault();
+      const origin = selectionOrigin();
+      if (!origin) return;
+      const width = Math.max(...[...selection].map((c) => Number(c.split(':')[1]))) - origin.step + 1;
+      copySelection();
+      pasteAt(origin.track, origin.step + width);
+      flash(`duplicated ${clipboard.length} steps`);
+      return;
+    }
+    if (k === 'arrowup' || k === 'arrowdown') {
+      e.preventDefault();
+      selectionOps.nudge('vel', k === 'arrowup' ? 1 : -1);
+      return;
+    }
+    return;
+  }
+
+  if (selection.size) {
+    if (k === 'delete' || k === 'backspace') {
+      e.preventDefault(); selectionOps.clear(); return;
+    }
+    if (k === 'arrowup' || k === 'arrowdown') {
+      e.preventDefault();
+      const by = k === 'arrowup' ? 1 : -1;
+      selectionOps.nudge(e.shiftKey ? 'oct' : 'deg', by);
+      return;
+    }
+    if (k === 'arrowleft' || k === 'arrowright') {
+      e.preventDefault();
+      selectionOps.nudge('nudge', k === 'arrowright' ? 1 : -1);
+      return;
+    }
+    if (k === 'escape') { clearSelection(); return; }
+  }
+
   if (k === ' ') { e.preventDefault(); api.send(state && state.playing ? 'stop' : 'play'); return; }
   if (k === 'r') { api.send('record'); return; }
   if (k === 'z') { setOctave(octave - 1); return; }

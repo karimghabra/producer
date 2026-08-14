@@ -222,6 +222,32 @@ section { padding:14px; overflow:auto; min-width:0; }
 
 .grid-legend { margin-top:10px; font-size:10px; color:var(--dimmer); text-align:center; }
 
+/* ---------- selection ---------- */
+.gcell.picked { outline:2px solid var(--text); outline-offset:-2px; }
+.gcell.picked:not(.on) { background:rgba(233,238,251,.09); }
+
+/* Drawn on the body so it is never clipped by a scrolling row. */
+.select-box { position:fixed; z-index:40; pointer-events:none;
+              border:1px solid var(--fitted); border-radius:3px;
+              background:rgba(94,230,197,.12); }
+
+.grid-tools { display:flex; align-items:center; gap:5px; flex-wrap:wrap;
+              margin-top:11px; padding:8px 11px; min-height:38px;
+              border-radius:9px; border:1px solid transparent; transition:.12s; }
+.grid-tools.on { background:rgba(7,9,16,.55); border-color:var(--line-soft); }
+.tools-hint { font-size:10px; color:var(--dimmer); }
+.tools-count { display:flex; align-items:baseline; gap:7px; margin-right:6px;
+               font:700 9px var(--sans); letter-spacing:.12em; color:var(--dimmer); }
+.tools-count b { font:600 11px var(--mono); color:var(--fitted); letter-spacing:0; }
+
+.flash { margin-left:12px; font:10px var(--mono); color:var(--fitted);
+         opacity:0; transition:opacity .18s; white-space:nowrap; }
+.flash.on { opacity:1; }
+
+.scene-rename { padding:6px 10px; border-radius:6px; background:var(--ink0);
+                border:1px solid var(--fitted); color:var(--text);
+                font:600 10.5px var(--sans); outline:none; width:130px; }
+
 /* ---------- steps ---------- */
 .bar { display:flex; align-items:center; gap:6px; margin-bottom:12px; }
 .bar.wrap { flex-wrap:wrap; }

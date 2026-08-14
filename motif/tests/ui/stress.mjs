@@ -307,6 +307,24 @@ const HOSTILE = [
   '{"type":"deleteProject","name":"does not exist"}',
   '{"type":"renameScene","scene":9999,"name":"x"}',
   '{"type":"removeScene","scene":9999}',
+  // Bulk edits parse their own payload, so the payload is worth attacking.
+  '{"type":"cells","op":"on","cells":""}',
+  '{"type":"cells","op":"nope","cells":"0:0"}',
+  '{"type":"cells","op":"on","cells":"garbage"}',
+  '{"type":"cells","op":"on","cells":":::::"}',
+  '{"type":"cells","op":"on","cells":"0:0,"}',
+  '{"type":"cells","op":"on","cells":"-1:-1,99999:99999"}',
+  '{"type":"cells","op":"deg","value":99999,"cells":"0:0,4:0"}',
+  '{"type":"cells","op":"vel","value":-99999,"cells":"0:0"}',
+  '{"type":"cells","op":"nudge","value":99999,"cells":"0:0"}',
+  '{"type":"cells","op":"ratchet","value":-99999,"cells":"0:0"}',
+  '{"type":"pasteCells","track":0,"step":0,"data":""}',
+  '{"type":"pasteCells","track":0,"step":0,"data":"garbage"}',
+  '{"type":"pasteCells","track":0,"step":0,"data":";;;;"}',
+  '{"type":"pasteCells","track":-9,"step":-9,"data":"0:0:80:0:0:1:1"}',
+  '{"type":"pasteCells","track":0,"step":0,"data":"99999:99999:999:999:999:999:999"}',
+  '{"type":"pasteCells","track":0,"step":0,"data":"0:0:-500:-500:-500:-500:-500"}',
+  '{"type":"pasteCells","track":0,"step":0,"data":"0:0"}',
 ];
 
 let refused = 0;
@@ -380,6 +398,28 @@ async function clickSomething() {
   return `clicked ${label || 'a control'}`;
 }
 
+/** Select a random block and do something to it. */
+async function selectAndEdit() {
+  if (!await page.locator('#grid-rows .gcell').count()) return 'not in the grid';
+  const cells = page.locator('#grid-rows .gcell');
+  const n = await cells.count();
+  const a = await cells.nth(int(0, n - 1)).boundingBox().catch(() => null);
+  const b2 = await cells.nth(int(0, n - 1)).boundingBox().catch(() => null);
+  if (!a || !b2) return 'cells had no box';
+  await page.keyboard.down('Shift');
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b2.x + b2.width / 2, b2.y + b2.height / 2, { steps: int(3, 8) });
+  await page.mouse.up();
+  await page.keyboard.up('Shift');
+  await page.waitForTimeout(80);
+
+  const tool = page.locator('#grid-tools .chip');
+  const tools = await tool.count();
+  if (tools) await tool.nth(int(0, tools - 1)).click({ timeout: 1200 }).catch(() => {});
+  return 'selected a block and edited it';
+}
+
 async function playKeys() {
   const keys = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'q', 'w', 'e', 'r', 't'];
   const k = pick(keys);
@@ -444,6 +484,7 @@ const ACTIONS = [
   [24, clickSomething],
   [20, churn],
   [10, dragSomething],
+  [8, selectAndEdit],
   [7, drawSomething],
   [8, playKeys],
   [3, typeSomewhere],
