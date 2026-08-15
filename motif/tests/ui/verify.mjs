@@ -447,6 +447,34 @@ check(Math.abs(await cellLeft(0, 3) - await cellLeft(2, 24)) <= 2,
       'and so does beat four',
       `${await cellLeft(0, 3)}px vs ${await cellLeft(2, 24)}px`);
 
+// Changing the rate keeps the musical length. Asking for 1/32 means "run this
+// twice as fast", not "make it half a bar" - and the steps already written have
+// to move with it, or the part stops lining up with everything else.
+await cmd({ type: 'newSong' });
+await cmd({ type: 'patternLength', track: 0, value: 16 });
+await cmd({ type: 'patternResolution', track: 0, value: 4 });
+await cmd({ type: 'cells', op: 'off', cells: '0:0,0:1,0:2,0:3,0:4,0:5,0:6,0:7,0:8,0:9,0:10,0:11,0:12,0:13,0:14,0:15' });
+await cmd({ type: 'stepEdit', track: 0, step: 0, what: 'on', value: 1 });
+await cmd({ type: 'stepEdit', track: 0, step: 8, what: 'on', value: 1 });
+await page.waitForTimeout(450);
+const beatsBefore = (() => 16 / 4)();
+await cmd({ type: 'patternResolution', track: 0, value: 8 });
+await page.waitForTimeout(450);
+const rescaled = (await engine()).tracks[0].patterns[0];
+check(rescaled.length === 32 && rescaled.length / rescaled.resolution === beatsBefore,
+      'changing the rate keeps the pattern the same length in bars',
+      `16 steps at 1/16 -> ${rescaled.length} steps at 1/32, both ${beatsBefore} beats`);
+check(rescaled.steps[0].on && rescaled.steps[16].on
+      && rescaled.steps.filter((s) => s.on).length === 2,
+      'and the steps already written move with it',
+      `on at ${rescaled.steps.map((s, i) => (s.on ? i : null)).filter((i) => i !== null).join(',')}`);
+await cmd({ type: 'newSong' });
+await cmd({ type: 'patternResolution', track: 0, value: 1 });
+await cmd({ type: 'patternLength', track: 0, value: 4 });
+await cmd({ type: 'patternResolution', track: 2, value: 8 });
+await cmd({ type: 'patternLength', track: 2, value: 32 });
+await page.waitForTimeout(500);
+
 // The ruler counts beats, and belongs to no track in particular.
 const rulerMarks = await page.locator('#grid-ruler .gr-marks span').allTextContents();
 check(rulerMarks.join(',') === '1,2,3,4', 'the ruler counts beats, not steps',

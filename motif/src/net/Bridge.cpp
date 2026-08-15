@@ -764,9 +764,46 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
         });
         return true;
     }
+    /**
+     * Change how fast a track's steps run, keeping its musical length.
+     *
+     * Asking for 1/32 means "run this part twice as fast", not "make it half a
+     * bar". Changing the rate alone did the latter: a sixteen step pattern at
+     * 1/16 is one bar, and the same sixteen steps at 1/32 is half of one. The
+     * pattern silently got shorter and the part stopped lining up with
+     * everything else.
+     *
+     * So the step count moves with the rate. Ratios that do not divide evenly -
+     * 1/16 to 1/8T - round to the nearest whole step, which is the closest a
+     * grid can come to the same span.
+     */
     if (type == "patternResolution") {
+        const bool keepLength = numField(body, "keepLength", 1.0) > 0.5;
         onTrack([&](Track& t, Song&) {
-            if (auto* p = t.current()) p->resolution = std::clamp(intField(body, "value", 4), 1, 8);
+            Pattern* p = t.current();
+            if (!p) return;
+            const int wanted = std::clamp(intField(body, "value", 4), 1, 8);
+            const int was = std::max(1, p->resolution);
+            p->resolution = wanted;
+            if (!keepLength || wanted == was) return;
+
+            const double beats = double(p->length) / double(was);
+            const int scaled = std::clamp(int(std::lround(beats * double(wanted))), 1, 64);
+            if (scaled == p->length) return;
+
+            // Steps that already exist keep their place in time rather than
+            // their index, so the part you wrote still sounds where you put it.
+            // Fill value, not just a size: vector<T> v(size_t(n)) declares a
+            // function.
+            std::vector<Step> moved(size_t(scaled), Step{});
+            for (int i = 0; i < p->length && i < int(p->steps.size()); ++i) {
+                if (!p->steps[size_t(i)].on) continue;
+                const int to = int(std::lround(double(i) / double(was) * double(wanted)));
+                if (to >= 0 && to < scaled) moved[size_t(to)] = p->steps[size_t(i)];
+            }
+            p->resize(scaled);
+            p->steps = std::move(moved);
+            p->euclidPulses = std::clamp(p->euclidPulses, 0, p->length);
         });
         return true;
     }

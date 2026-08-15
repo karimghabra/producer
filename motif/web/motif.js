@@ -832,10 +832,13 @@ function openRateMenu(trackIndex, anchor) {
     row.append(b);
   }
   menu.append(row);
+  const bars = (pat.length / Math.max(1, pat.resolution)) / (state.beatsPerBar || 4);
   const note = document.createElement('div');
   note.className = 'menu-foot';
-  note.textContent = 'Each track keeps its own rate. Mixing them is how a part '
-    + 'sits in half time or doubles up under everything else.';
+  note.textContent = `This pattern is ${pat.length} steps — `
+    + `${bars === Math.round(bars) ? bars : bars.toFixed(2)} `
+    + `${Math.abs(bars - 1) < 1e-9 ? 'bar' : 'bars'}. Changing the rate keeps that `
+    + 'length and moves the steps with it, so the part still sits where you put it.';
   menu.append(note);
 
   document.body.append(menu);
