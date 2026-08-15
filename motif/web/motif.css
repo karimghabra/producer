@@ -486,6 +486,10 @@ input[type=range]::-webkit-slider-thumb:active { cursor:grabbing; }
 .pchoices { grid-column:1/-1; display:flex; gap:26px; flex-wrap:wrap; align-items:flex-start; }
 .param { width:76px; padding:7px 2px; border-radius:8px; cursor:ns-resize; }
 .param:hover { background:rgba(255,255,255,.04); }
+/* Dimmed, not hidden: a control that vanishes when you change engine is as
+   confusing as one that does nothing. This says "not here" and stays put. */
+.param.inert, .choice.inert { opacity:.28; }
+.param.inert:hover, .choice.inert:hover { opacity:.5; background:rgba(255,255,255,.02); }
 .param label { font-size:8px; letter-spacing:.09em; }
 .param output { font-size:10.5px; color:var(--text); }
 

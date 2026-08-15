@@ -136,7 +136,10 @@ void Voice::render(float& outL, float& outR, const Patch& patch) {
     l = filterL_.next(l);
     r = filterR_.next(r);
 
-    const float g = ampVal * velocity_ * 0.5f;
+    // The patch's own level, which was never applied - the LEVEL control in the
+    // sound view did nothing at all. The constant is 0.5 / the default gain, so
+    // a patch left at its default sounds exactly as loud as it did before.
+    const float g = ampVal * velocity_ * 0.6667f * patch.gain;
     outL += dsp::saturate(l * g, patch.drive);
     outR += dsp::saturate(r * g, patch.drive);
 }

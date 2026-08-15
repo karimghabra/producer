@@ -31,6 +31,12 @@ double ParamSpec::toNorm(double value) const {
     return (v - lo) / (hi - lo);
 }
 
+bool ParamSpec::appliesTo(const Track& track) const {
+    const int engine = track.instrument.isDrum
+        ? int(track.instrument.drumEngine) : int(track.instrument.synth.engine);
+    return (engines & (1u << engine)) != 0;
+}
+
 double ParamSpec::fromNorm(double norm) const {
     const double n = std::clamp(norm, 0.0, 1.0);
     const double lo = min, hi = max;
@@ -51,24 +57,28 @@ const std::vector<ParamSpec>& synthParamSpecs() {
 
         { "wave", "WAVE", 0, 3, false, "",
           "The raw shape before anything is done to it. Sine is pure, saw is "
-          "bright and buzzy, square is hollow, triangle sits between sine and saw.",
+          "bright and buzzy, square is hollow, triangle sits between sine and saw. "
+          "FM and Sub build their own tone from sines and ignore this.",
           kWaves, 4,
           [](const Track& t) { return float(int(t.instrument.synth.wave)); },
-          [](Track& t, float v) { t.instrument.synth.wave = dsp::Wave(std::clamp(int(std::lround(v)), 0, 3)); } },
+          [](Track& t, float v) { t.instrument.synth.wave = dsp::Wave(std::clamp(int(std::lround(v)), 0, 3)); },
+          kStackedSynths },
 
         { "unison", "VOICES", 1, 9, false, "",
           "How many copies of the oscillator run at once. More voices, spread "
           "apart by DETUNE, is what makes a supersaw enormous. One voice is a "
-          "single clean tone.", nullptr, 0, SYN_INT(unison) },
+          "single clean tone. FM and Sub are single oscillators and ignore this.",
+          nullptr, 0, SYN_INT(unison), kStackedSynths },
 
         { "detune", "DETUNE", 0, 1, false, "",
           "How far apart the unison voices are tuned. A little is thickness; a "
-          "lot is a chord that has not decided what it is yet.", nullptr, 0, SYN(detune) },
+          "lot is a chord that has not decided what it is yet.",
+          nullptr, 0, SYN(detune), kStackedSynths },
 
         { "spread", "SPREAD", 0, 1, false, "",
           "How far the voices are thrown across the stereo field. At zero they "
           "stack in the middle; at one the outer voices sit hard left and right.",
-          nullptr, 0, SYN(spread) },
+          nullptr, 0, SYN(spread), kStackedSynths },
 
         { "octave", "OCTAVE", -3, 3, false, "",
           "Shifts the whole instrument in octaves, without changing the pattern.",
@@ -81,12 +91,12 @@ const std::vector<ParamSpec>& synthParamSpecs() {
         { "fmRatio", "FM RATIO", 0.5f, 12, false, "x",
           "Only used by the FM engine. The modulator's pitch as a multiple of "
           "the note. Whole numbers stay musical; fractions ring like bells and "
-          "metal.", nullptr, 0, SYN(fmRatio) },
+          "metal.", nullptr, 0, SYN(fmRatio), kOnlyFm },
 
         { "fmIndex", "FM AMOUNT", 0, 12, false, "",
           "Only used by the FM engine. How hard the modulator bends the carrier. "
           "Low is a gentle edge, high is clangorous and inharmonic.",
-          nullptr, 0, SYN(fmIndex) },
+          nullptr, 0, SYN(fmIndex), kOnlyFm },
 
         { "cutoff", "CUTOFF", 60, 18000, true, "Hz",
           "The filter closes above this frequency. Lower is darker and further "

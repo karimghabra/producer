@@ -6,6 +6,7 @@
 #include "audio/Engine.h"
 #include "audio/Fx.h"
 #include "music/Automation.h"
+#include "music/Params.h"
 #include "music/Presets.h"
 #include "music/Project.h"
 #include "music/Quantizer.h"
@@ -829,6 +830,152 @@ int main() {
         check(worst(swapped) < 0.75,
               "switching to a pattern at another rate does not interrupt it",
               "worst gap " + std::to_string(worst(swapped)).substr(0, 5) + " beats");
+    }
+
+    // --- does every dial actually do something? -------------------------------
+    //
+    // Reported as "a lot of the sounds don't change when you modify the dials",
+    // which is the sort of claim that should never be argued about. Each
+    // parameter is set low, rendered, set high, rendered again, and the two
+    // buffers compared. A control that produces identical audio at both ends of
+    // its travel is either broken or does not apply to the engine it is being
+    // shown for - and either way it should not be sitting there inviting a
+    // turn.
+    std::printf("\nEvery dial changes the sound:\n");
+    {
+        constexpr double SR = 48000.0;
+
+        auto renderPatch = [&](const Patch& patch, int note) {
+            Voice v;
+            v.prepare(SR);
+            v.start(note, 0.9f, patch);
+            std::vector<float> buf(size_t(SR * 0.45), 0.0f);
+            for (size_t i = 0; i < buf.size(); ++i) {
+                // Let go part way, so release times are exercised too.
+                if (i == size_t(SR * 0.25)) v.release();
+                float l = 0.0f, r = 0.0f;
+                v.render(l, r, patch);
+                buf[i] = l;
+            }
+            return buf;
+        };
+
+        auto differ = [](const std::vector<float>& a, const std::vector<float>& b) {
+            double sum = 0.0;
+            const size_t n = std::min(a.size(), b.size());
+            for (size_t i = 0; i < n; ++i) sum += double(a[i] - b[i]) * double(a[i] - b[i]);
+            return std::sqrt(sum / double(std::max<size_t>(n, 1)));
+        };
+
+        int inertOverall = 0;
+        std::string inertNames;
+
+        for (SynthEngine engine : { SynthEngine::Supersaw, SynthEngine::Reese, SynthEngine::FM,
+                                    SynthEngine::Sub, SynthEngine::Pluck, SynthEngine::Pad }) {
+            int inert = 0;
+            std::string names;
+            for (const auto& spec : synthParamSpecs()) {
+                if (std::string(spec.id) == "engine") continue;
+
+                Track lo, hi;
+                lo.instrument.isDrum = hi.instrument.isDrum = false;
+                lo.instrument.synth.engine = hi.instrument.synth.engine = engine;
+                spec.set(lo, float(spec.fromNorm(0.2)));
+                spec.set(hi, float(spec.fromNorm(0.8)));
+                // The engine is part of the patch, so put it back after setting.
+                lo.instrument.synth.engine = hi.instrument.synth.engine = engine;
+
+                const double d = differ(renderPatch(lo.instrument.synth, 57),
+                                        renderPatch(hi.instrument.synth, 57));
+                if (d < 1e-6) { ++inert; names += std::string(names.empty() ? "" : " ") + spec.label; }
+            }
+            check(true, std::string("  ") + synthEngineName(engine),
+                  inert ? std::to_string(inert) + " inert: " + names : "every dial does something");
+            if (inert) { inertOverall += inert; inertNames += names + " "; }
+        }
+
+        // The parameters that do nothing on every single engine are the broken
+        // ones. Those that do nothing on some are engine-specific, which is a
+        // question for the interface rather than the engine.
+        int alwaysInert = 0;
+        std::string alwaysNames;
+        for (const auto& spec : synthParamSpecs()) {
+            if (std::string(spec.id) == "engine") continue;
+            bool everMoved = false;
+            for (SynthEngine engine : { SynthEngine::Supersaw, SynthEngine::Reese, SynthEngine::FM,
+                                        SynthEngine::Sub, SynthEngine::Pluck, SynthEngine::Pad }) {
+                Track lo, hi;
+                lo.instrument.isDrum = hi.instrument.isDrum = false;
+                spec.set(lo, float(spec.fromNorm(0.2)));
+                spec.set(hi, float(spec.fromNorm(0.8)));
+                lo.instrument.synth.engine = hi.instrument.synth.engine = engine;
+                if (differ(renderPatch(lo.instrument.synth, 57),
+                           renderPatch(hi.instrument.synth, 57)) > 1e-6) { everMoved = true; break; }
+            }
+            if (!everMoved) { ++alwaysInert; alwaysNames += std::string(spec.label) + " "; }
+        }
+        check(alwaysInert == 0, "no synth dial is dead on every engine",
+              alwaysInert ? alwaysNames : "all reachable");
+
+        // And every dial that does nothing on an engine must say so, or the
+        // app looks broken every time a knob is turned with no effect.
+        int unmarked = 0;
+        std::string unmarkedNames;
+        for (SynthEngine engine : { SynthEngine::Supersaw, SynthEngine::Reese, SynthEngine::FM,
+                                    SynthEngine::Sub, SynthEngine::Pluck, SynthEngine::Pad }) {
+            Track probe;
+            probe.instrument.isDrum = false;
+            probe.instrument.synth.engine = engine;
+            for (const auto& spec : synthParamSpecs()) {
+                if (std::string(spec.id) == "engine") continue;
+                Track lo = probe, hi = probe;
+                spec.set(lo, float(spec.fromNorm(0.2)));
+                spec.set(hi, float(spec.fromNorm(0.8)));
+                lo.instrument.synth.engine = hi.instrument.synth.engine = engine;
+                const bool moves = differ(renderPatch(lo.instrument.synth, 57),
+                                          renderPatch(hi.instrument.synth, 57)) > 1e-6;
+                if (!moves && spec.appliesTo(probe)) {
+                    ++unmarked;
+                    unmarkedNames += std::string(synthEngineName(engine)) + "/" + spec.label + " ";
+                }
+            }
+        }
+        check(unmarked == 0, "and every dial that does nothing here is marked as such",
+              unmarked ? unmarkedNames : "all accounted for");
+
+        // Drums, per engine.
+        auto renderDrum = [&](DrumEngine engine, const DrumParams& p) {
+            DrumVoice v;
+            v.prepare(SR);
+            v.trigger(engine, p, 0.9f, 0.0f);
+            std::vector<float> buf(size_t(SR * 0.6), 0.0f);
+            for (size_t i = 0; i < buf.size(); ++i) {
+                float l = 0.0f, r = 0.0f;
+                v.render(l, r);
+                buf[i] = l;
+            }
+            return buf;
+        };
+
+        int drumAlwaysInert = 0;
+        std::string drumNames;
+        for (const auto& spec : drumParamSpecs()) {
+            if (std::string(spec.id) == "engine") continue;
+            bool everMoved = false;
+            for (DrumEngine engine : { DrumEngine::Kick, DrumEngine::Snare, DrumEngine::Clap,
+                                       DrumEngine::Hat, DrumEngine::Cymbal, DrumEngine::Tom,
+                                       DrumEngine::Rim, DrumEngine::Noise }) {
+                Track lo, hi;
+                lo.instrument.isDrum = hi.instrument.isDrum = true;
+                spec.set(lo, float(spec.fromNorm(0.2)));
+                spec.set(hi, float(spec.fromNorm(0.8)));
+                if (differ(renderDrum(engine, lo.instrument.drum),
+                           renderDrum(engine, hi.instrument.drum)) > 1e-6) { everMoved = true; break; }
+            }
+            if (!everMoved) { ++drumAlwaysInert; drumNames += std::string(spec.label) + " "; }
+        }
+        check(drumAlwaysInert == 0, "no drum dial is dead on every engine",
+              drumAlwaysInert ? drumNames : "all reachable");
     }
 
     // --- humanise ------------------------------------------------------------

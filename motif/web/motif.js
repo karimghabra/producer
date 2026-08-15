@@ -2224,9 +2224,18 @@ function renderParams() {
         send(v);
       }, false, 52);
       wrap.classList.add('param');
-      // The explanation is the point. Hover on the control that raised the
-      // question, rather than in documentation nobody opens.
-      wrap.title = `${p.label}\n\n${p.help}`;
+      // A control the current engine does not read is dimmed rather than
+      // hidden. Turning a dial and hearing nothing reads as a broken app;
+      // seeing that it does not apply here reads as a synth.
+      if (p.applies === false) {
+        wrap.classList.add('inert');
+        wrap.title = `${p.label} — not used by the ${state.tracks[selected].engine} engine`
+                   + `\n\n${p.help}`;
+      } else {
+        // The explanation is the point. Hover on the control that raised the
+        // question, rather than in documentation nobody opens.
+        wrap.title = `${p.label}\n\n${p.help}`;
+      }
       row.append(wrap);
     }
     panel.append(row);
@@ -2296,8 +2305,10 @@ function formatParam(p, value) {
 /** Discrete parameters get named buttons; a knob would hide the names. */
 function choiceControl(p) {
   const wrap = document.createElement('div');
-  wrap.className = 'choice';
-  wrap.title = `${p.label}\n\n${p.help}`;
+  wrap.className = 'choice' + (p.applies === false ? ' inert' : '');
+  wrap.title = p.applies === false
+    ? `${p.label} — not used by the ${state.tracks[selected].engine} engine\n\n${p.help}`
+    : `${p.label}\n\n${p.help}`;
   wrap.innerHTML = `<label>${p.label}</label>`;
   const row = document.createElement('div');
   row.className = 'choice-row';

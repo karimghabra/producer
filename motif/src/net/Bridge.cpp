@@ -1331,6 +1331,7 @@ int Bridge::start(const std::string& webRoot, int preferredPort) {
               << ",\"max\":" << num(p.max, 4)
               << ",\"unit\":\"" << esc(p.unit) << "\""
               << ",\"log\":" << (p.log ? "true" : "false")
+              << ",\"applies\":" << (p.appliesTo(t) ? "true" : "false")
               << ",\"help\":\"" << esc(p.help) << "\"";
             if (p.choices != nullptr) {
                 j << ",\"choices\":[";
