@@ -136,14 +136,28 @@ public:
     int activeVoiceCount() const;
 
 private:
+    struct SynthSlot {
+        Voice voice;
+        int track = -1;
+        /**
+         * When the sequencer should let this note go, in beats.
+         *
+         * Negative means nobody will: a note played by hand is held until the
+         * key comes up. A note fired by the sequencer has a length, and
+         * without this nothing ever released it - every sequenced synth note
+         * sustained until the voice pool stole it, which is a drone rather
+         * than a part.
+         */
+        double releaseAt = -1.0;
+    };
+    struct DrumSlot { DrumVoice voice; int track = -1; };
+
     void fireStep(int trackIndex, const Track& track, const Pattern& pattern,
                   int stepIndex, long long passIndex);
     bool conditionPasses(const TrigCondition& cond, long long pass, long long stepCounter) const;
-    Voice* allocateSynthVoice(int trackIndex);
+    /** Returns the slot, not the voice: the caller has to set when it ends. */
+    SynthSlot* allocateSynthVoice(int trackIndex);
     DrumVoice* allocateDrumVoice(int trackIndex);
-
-    struct SynthSlot { Voice voice; int track = -1; };
-    struct DrumSlot { DrumVoice voice; int track = -1; };
 
     std::array<SynthSlot, kSynthVoices> synths_;
     std::array<DrumSlot, kDrumVoices> drums_;

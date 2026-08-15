@@ -642,6 +642,82 @@ int main() {
               "section " + std::to_string(engine.currentSection()));
     }
 
+    // --- a sequenced note ends ------------------------------------------------
+    //
+    // Nothing released a note fired by the sequencer. Every pitched step
+    // sustained until the voice pool stole it, so the app played a wall of
+    // overlapping drones and a step's LENGTH did nothing at all. It went
+    // unnoticed because every check asked whether sound was being produced and
+    // none asked whether it stopped.
+    std::printf("\nA sequenced note ends:\n");
+    {
+        constexpr double SR = 48000.0;
+        const int blockSize = 256;
+
+        // One short note at the top of a two-bar pattern, on a sustaining
+        // patch: if nothing releases it, it never goes away.
+        auto renderBars = [&](int stepLength, double bars) {
+            Song song;
+            Track t;
+            t.name = "Pad";
+            t.instrument.isDrum = false;
+            t.instrument.synth.ampSustain = 1.0f;      // holds forever if held
+            t.instrument.synth.ampRelease = 0.05f;
+            t.instrument.synth.ampDecay = 2.0f;
+            t.seqEnabled = true;
+            Pattern p;
+            p.resolution = 4;
+            p.resize(32);
+            p.steps[0].on = true;
+            p.steps[0].length = stepLength;
+            t.patterns = { p };
+            song.tracks.push_back(t);
+            song.bpm = 120.0;
+            song.master.limiter = false;
+
+            Engine engine;
+            engine.prepare(SR, blockSize);
+            engine.setSong(song);
+            engine.setPlaying(true);
+
+            const int samples = int(bars * 4.0 * (60.0 / song.bpm) * SR);
+            std::vector<float> l(size_t(blockSize), 0.0f), r(size_t(blockSize), 0.0f);
+            std::vector<float> out;
+            out.reserve(size_t(samples));
+            for (int done = 0; done < samples; done += blockSize) {
+                engine.render(l.data(), r.data(), blockSize);
+                out.insert(out.end(), l.begin(), l.end());
+            }
+            return out;
+        };
+
+        auto peakBetween = [](const std::vector<float>& buf, double a, double b) {
+            const size_t lo = size_t(a * double(buf.size()));
+            const size_t hi = std::min(buf.size(), size_t(b * double(buf.size())));
+            float peak = 0.0f;
+            for (size_t i = lo; i < hi; ++i) peak = std::max(peak, std::abs(buf[i]));
+            return peak;
+        };
+
+        // A one-step note at 1/16 lasts an eighth of a beat. Two bars later it
+        // must be long gone.
+        const auto shortNote = renderBars(1, 2.0);
+        const float atStart = peakBetween(shortNote, 0.0, 0.06);
+        const float atEnd = peakBetween(shortNote, 0.55, 1.0);
+        check(atStart > 0.01f, "the note sounds", std::to_string(atStart).substr(0, 5));
+        check(atEnd < atStart * 0.02f, "and then stops",
+              std::to_string(atStart).substr(0, 5) + " -> " + std::to_string(atEnd).substr(0, 6));
+
+        // A longer step holds for longer. This is what LENGTH is for.
+        const auto longNote = renderBars(16, 2.0);
+        const float shortAtQuarter = peakBetween(shortNote, 0.2, 0.25);
+        const float longAtQuarter = peakBetween(longNote, 0.2, 0.25);
+        check(longAtQuarter > shortAtQuarter * 5.0f,
+              "a longer step holds the note for longer",
+              "1 step " + std::to_string(shortAtQuarter).substr(0, 6)
+                  + " vs 16 steps " + std::to_string(longAtQuarter).substr(0, 5));
+    }
+
     // --- humanise ------------------------------------------------------------
     //
     // The control existed, was saved, and had a knob, and the engine never read

@@ -178,7 +178,7 @@ void Engine::editSong(const std::function<void(Song&)>& fn) {
 
 // --- allocation ------------------------------------------------------------
 
-Voice* Engine::allocateSynthVoice(int trackIndex) {
+Engine::SynthSlot* Engine::allocateSynthVoice(int trackIndex) {
     SynthSlot* freeSlot = nullptr;
     SynthSlot* oldest = &synths_[0];
     for (auto& s : synths_) {
@@ -188,8 +188,9 @@ Voice* Engine::allocateSynthVoice(int trackIndex) {
     SynthSlot* chosen = freeSlot ? freeSlot : oldest;
     if (!freeSlot) chosen->voice.kill();
     chosen->track = trackIndex;
+    chosen->releaseAt = -1.0;          // held until told otherwise
     chosen->voice.setStamp(++stampCounter_);
-    return &chosen->voice;
+    return chosen;
 }
 
 DrumVoice* Engine::allocateDrumVoice(int trackIndex) {
@@ -229,7 +230,7 @@ void Engine::noteOn(int midiNote, float velocity, double atSec) {
     if (isDrum) {
         allocateDrumVoice(armed)->trigger(engine, drumParams, velocity, float(midiNote - 60));
     } else {
-        allocateSynthVoice(armed)->start(midiNote, velocity, patch);
+        allocateSynthVoice(armed)->voice.start(midiNote, velocity, patch);
     }
 
     if (recording_.load(std::memory_order_relaxed)) {
@@ -260,7 +261,10 @@ void Engine::noteOff(int midiNote, double atSec) {
 }
 
 void Engine::allNotesOff() {
-    for (auto& s : synths_) if (s.voice.active()) s.voice.release();
+    for (auto& s : synths_) {
+        if (s.voice.active()) s.voice.release();
+        s.releaseAt = -1.0;
+    }
 }
 
 void Engine::auditionTrack(int trackIndex, int midiNote, float velocity) {
@@ -278,7 +282,7 @@ void Engine::auditionTrack(int trackIndex, int midiNote, float velocity) {
         drumParams = t.instrument.drum;
     }
     if (isDrum) allocateDrumVoice(trackIndex)->trigger(engine, drumParams, velocity, float(midiNote - 60));
-    else        allocateSynthVoice(trackIndex)->start(midiNote, velocity, patch);
+    else        allocateSynthVoice(trackIndex)->voice.start(midiNote, velocity, patch);
 }
 
 int Engine::activeVoiceCount() const {
@@ -408,7 +412,13 @@ void Engine::fireStep(int trackIndex, const Track& track, const Pattern& pattern
                                                velocity, float(semis));
     } else {
         const int midi = theory::degreeToMidi(song_.key, step.degree, step.octave);
-        allocateSynthVoice(trackIndex)->start(midi, velocity, track.instrument.synth);
+        SynthSlot* slot = allocateSynthVoice(trackIndex);
+        slot->voice.start(midi, velocity, track.instrument.synth);
+        // The step's own length, which is what the LENGTH control has always
+        // been setting and nothing was reading. Without it a sequenced note
+        // sustained until its voice was stolen.
+        const double stepBeats = 1.0 / double(std::max(1, pattern.resolution));
+        slot->releaseAt = positionBeatsLocal_ + double(std::max(1, step.length)) * stepBeats;
     }
 
     // Sidechain: the duck is triggered by the hit itself, at the same instant,
@@ -497,6 +507,16 @@ void Engine::render(float* left, float* right, int numSamples) {
     std::array<float, kMaxTracks> trackL{}, trackR{};
 
     for (int n = 0; n < numSamples; ++n) {
+        // Notes whose length has run out. Checked here rather than scheduled
+        // ahead, so a tempo change while a note is sounding shortens or
+        // lengthens it the way everything else on the grid moves.
+        for (auto& s : synths_) {
+            if (s.releaseAt >= 0.0 && positionBeatsLocal_ >= s.releaseAt) {
+                s.voice.release();
+                s.releaseAt = -1.0;
+            }
+        }
+
         // --- sequencer, advanced in beats ---------------------------------
         if (isPlaying) {
             for (size_t t = 0; t < trackCount; ++t) {
@@ -566,9 +586,13 @@ void Engine::render(float* left, float* right, int numSamples) {
                             allocateDrumVoice(int(t))->trigger(track.instrument.drumEngine,
                                                                track.instrument.drum, v, float(semis));
                         } else {
-                            allocateSynthVoice(int(t))->start(
+                            SynthSlot* slot = allocateSynthVoice(int(t));
+                            slot->voice.start(
                                 theory::degreeToMidi(song_.key, s.degree, s.octave), v,
                                 track.instrument.synth);
+                            // A retrigger lasts until the next one, so a roll
+                            // is a roll rather than a chord piling up.
+                            slot->releaseAt = positionBeatsLocal_ + rt.ratchetInterval;
                         }
                     }
                     --rt.ratchetsLeft;
