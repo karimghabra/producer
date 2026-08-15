@@ -166,6 +166,19 @@ private:
     struct TrackRuntime {
         double nextStepBeats = 0.0;
         long long stepCounter = 0;
+        /**
+         * The step size this track's counter was last measured against.
+         *
+         * stepCounter is a free-running count and the next boundary is
+         * stepCounter * stepBeats, so the two only agree while stepBeats holds
+         * still. Change a track from 1/16 to 1/8 and the next boundary jumps
+         * beats into the future - the track drops out. The other way it lands
+         * in the past and fires a burst catching up. Either way the change
+         * interrupts the part, which is the one thing changing a rate must not
+         * do. Remembering it lets the counter be re-anchored to where the
+         * transport actually is.
+         */
+        double lastStepBeats = 0.0;
         /** 0 at the moment of a duck, rising to 1 as it recovers. */
         float duckPhase = 1.0f;
         int lastStep = -1;

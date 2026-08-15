@@ -539,6 +539,22 @@ void Engine::render(float* left, float* right, int numSamples) {
                 auto& rt = runtime_[t];
                 const double stepBeats = 1.0 / double(std::max(1, pattern->resolution));
 
+                // The step size changed under us - the rate was altered, or a
+                // pattern with a different one was selected. Re-anchor the
+                // counter to where the transport actually is, or the next
+                // boundary lands in the wrong place entirely and the part
+                // either drops out or stutters catching up.
+                if (rt.lastStepBeats != stepBeats) {
+                    if (rt.lastStepBeats > 0.0) {
+                        rt.stepCounter = (long long)std::ceil(positionBeatsLocal_ / stepBeats - 1e-9);
+                        rt.nextStepBeats = double(rt.stepCounter) * stepBeats;
+                        // Anything owed from the old grid no longer means
+                        // anything on the new one.
+                        rt.ratchetsLeft = 0;
+                    }
+                    rt.lastStepBeats = stepBeats;
+                }
+
                 if (positionBeatsLocal_ >= rt.nextStepBeats) {
                     const long long absolute = rt.stepCounter;
                     const int index = int(((absolute % pattern->length) + pattern->length) % pattern->length);

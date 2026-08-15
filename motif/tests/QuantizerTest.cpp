@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <random>
 #include <string>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -716,6 +717,118 @@ int main() {
               "a longer step holds the note for longer",
               "1 step " + std::to_string(shortAtQuarter).substr(0, 6)
                   + " vs 16 steps " + std::to_string(longAtQuarter).substr(0, 5));
+    }
+
+    // --- changing things while it plays must not interrupt it -----------------
+    //
+    // The class of check every earlier test was missing. They all set something
+    // up, rendered, and looked at the result. None of them changed something
+    // mid-flight and asked whether the music carried on - which is the only
+    // question that matters for a control you reach for while it is playing.
+    std::printf("\nEditing while it plays:\n");
+    {
+        constexpr double SR = 48000.0;
+        const int blockSize = 256;
+
+        /**
+         * Render, apply a change part way through, and report the gaps between
+         * hits in beats. A change that interrupts the part shows up as one long
+         * gap; a change that stutters shows up as several tiny ones.
+         */
+        auto gapsAcross = [&](const std::function<void(Song&)>& change, double atBeat) {
+            Song song;
+            Track t;
+            t.name = "Hat";
+            t.instrument.isDrum = true;
+            t.instrument.drumEngine = DrumEngine::Hat;
+            t.seqEnabled = true;
+            Pattern p;
+            p.resolution = 4;
+            p.resize(16);
+            for (auto& s : p.steps) s.on = true;      // every step, so gaps are obvious
+            t.patterns = { p };
+            song.tracks.push_back(t);
+            song.bpm = 120.0;
+            song.master.limiter = false;
+
+            Engine engine;
+            engine.prepare(SR, blockSize);
+            engine.setSong(song);
+            engine.setPlaying(true);
+
+            const double beatsPerSample = song.bpm / 60.0 / SR;
+            const int totalBlocks = 700;              // about 8 beats
+            std::vector<double> onsets;
+            std::vector<float> l(size_t(blockSize), 0.0f), r(size_t(blockSize), 0.0f);
+            bool changed = false;
+            double beat = 0.0;
+            float previous = 0.0f;
+
+            for (int b = 0; b < totalBlocks; ++b) {
+                if (!changed && beat >= atBeat) { engine.editSong(change); changed = true; }
+                engine.render(l.data(), r.data(), blockSize);
+                for (int i = 0; i < blockSize; ++i) {
+                    // A hit is a jump in level from near silence.
+                    const float mag = std::abs(l[size_t(i)]);
+                    if (previous < 0.02f && mag > 0.06f) onsets.push_back(beat);
+                    previous = mag;
+                    beat += beatsPerSample;
+                }
+            }
+
+            std::vector<double> gaps;
+            for (size_t i = 1; i < onsets.size(); ++i) gaps.push_back(onsets[i] - onsets[i - 1]);
+            return gaps;
+        };
+
+        auto worst = [](const std::vector<double>& gaps) {
+            double m = 0.0;
+            for (double g : gaps) m = std::max(m, g);
+            return m;
+        };
+
+        // A baseline: nothing changes, so nothing should interrupt.
+        const auto steady = gapsAcross([](Song&) {}, 4.0);
+        check(steady.size() > 20 && worst(steady) < 0.4,
+              "a steady pattern has no gaps to begin with",
+              std::to_string(steady.size()) + " hits, worst gap "
+                  + std::to_string(worst(steady)).substr(0, 5) + " beats");
+
+        // 1/16 to 1/8 doubles the step size. Before this was handled the track
+        // fell silent for several beats.
+        const auto slower = gapsAcross([](Song& s) {
+            s.tracks[0].patterns[0].resolution = 2;
+            s.tracks[0].patterns[0].resize(8);
+        }, 4.0);
+        check(worst(slower) < 0.75,
+              "halving the rate does not interrupt the track",
+              "worst gap " + std::to_string(worst(slower)).substr(0, 5) + " beats");
+
+        // And the other way, which used to fire a burst catching up.
+        const auto faster = gapsAcross([](Song& s) {
+            s.tracks[0].patterns[0].resolution = 8;
+            s.tracks[0].patterns[0].resize(32);
+            for (auto& st : s.tracks[0].patterns[0].steps) st.on = true;
+        }, 4.0);
+        double smallest = 1e9;
+        for (double g : faster) smallest = std::min(smallest, g);
+        check(worst(faster) < 0.4 && smallest > 0.02,
+              "doubling the rate neither stalls nor stutters",
+              "gaps " + std::to_string(smallest).substr(0, 5) + " .. "
+                  + std::to_string(worst(faster)).substr(0, 5) + " beats");
+
+        // Switching to a pattern with a different rate is the same hazard.
+        const auto swapped = gapsAcross([](Song& s) {
+            Pattern other;
+            other.resolution = 2;
+            other.resize(8);
+            for (auto& st : other.steps) st.on = true;
+            s.tracks[0].patterns.push_back(other);
+            s.tracks[0].activePattern = 1;
+        }, 4.0);
+        check(worst(swapped) < 0.75,
+              "switching to a pattern at another rate does not interrupt it",
+              "worst gap " + std::to_string(worst(swapped)).substr(0, 5) + " beats");
     }
 
     // --- humanise ------------------------------------------------------------

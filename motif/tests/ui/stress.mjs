@@ -1,13 +1,15 @@
 // Motif — stress and fuzz.
 //
-// Three passes against the running application:
+// Four passes against the running application:
 //
 //   1. Sweep    every visible control in every view is clicked once, and the
 //               invariants are checked after each one.
 //   2. Commands the bridge is fed rubbish - missing fields, indices past the
 //               end, NaN, enormous numbers, hostile strings - to check it
 //               refuses rather than corrupts.
-//   3. Walkers  random sequences of real interactions: navigating, clicking,
+//   3. Live     things changed while the transport runs, checking the music
+//               carries on rather than dropping out.
+//   4. Walkers  random sequences of real interactions: navigating, clicking,
 //               dragging knobs, drawing curves, typing. The invariants are
 //               checked continuously.
 //
@@ -351,7 +353,76 @@ await cmd({ type: 'deleteProject', name: 'evil' });
 console.log(`Pass 2  sent ${HOSTILE.length} hostile commands, ${refused} refused cleanly`);
 
 // ---------------------------------------------------------------------------
-// Pass 3 — random walkers
+// Pass 3 — does it keep playing while you change things
+//
+// The pass that was missing. Every other check sets something up, looks at the
+// result, and never asks whether the music carried on - which is the only
+// question that matters for a control you reach for mid-take. Changing a
+// track's rate used to drop it out for several beats and nothing noticed.
+// ---------------------------------------------------------------------------
+
+/** Peak over a window, sampled while the transport runs. */
+async function listen(ms) {
+  const peaks = [];
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    peaks.push((await engine()).peak);
+    await page.waitForTimeout(50);
+  }
+  return peaks;
+}
+
+/** The longest run of silence in a window, in samples of ~50ms. */
+const longestSilence = (peaks) => {
+  let run = 0, worst = 0;
+  for (const p of peaks) { run = p < 0.005 ? run + 1 : 0; worst = Math.max(worst, run); }
+  return worst;
+};
+
+await cmd({ type: 'newSong' });
+await cmd({ type: 'songMode', value: 0 });
+await cmd({ type: 'play' });
+await page.waitForTimeout(700);
+
+const baseline = longestSilence(await listen(1200));
+let interrupted = 0;
+
+const liveChanges = [
+  ['rate to 1/8', { type: 'patternResolution', track: 2, value: 2 }],
+  ['rate to 1/32', { type: 'patternResolution', track: 2, value: 8 }],
+  ['rate to 1/16T', { type: 'patternResolution', track: 2, value: 6 }],
+  ['rate back to 1/16', { type: 'patternResolution', track: 2, value: 4 }],
+  ['another pattern', { type: 'selectPattern', track: 0, index: 1 }],
+  ['back to the first', { type: 'selectPattern', track: 0, index: 0 }],
+  ['pattern length 7', { type: 'patternLength', track: 0, value: 7 }],
+  ['pattern length 16', { type: 'patternLength', track: 0, value: 16 }],
+  ['tempo to 90', { type: 'bpm', value: 90 }],
+  ['tempo to 150', { type: 'bpm', value: 150 }],
+  ['swing on', { type: 'swing', value: 0.5 }],
+  ['swing off', { type: 'swing', value: 0 }],
+  ['a filter', { type: 'filter', track: 0, what: 'type', value: 1 }],
+  ['filter off', { type: 'filter', track: 0, what: 'type', value: 0 }],
+];
+
+for (const [what, command] of liveChanges) {
+  note(`live ${what}`);
+  await cmd(command);
+  const silence = longestSilence(await listen(1100));
+  // Allowing a little more than the baseline: a slower rate genuinely leaves
+  // longer between hits. A dropout is several times that.
+  if (silence > Math.max(baseline, 4) * 3) {
+    fail('a change interrupted the music', `${what}: silent for ~${silence * 50}ms`);
+    interrupted++;
+  }
+  await checkInvariants(`live ${what}`);
+}
+await cmd({ type: 'stop' });
+await cmd({ type: 'newSong' });
+console.log(`Pass 3  ${liveChanges.length} changes made while playing, `
+            + `${interrupted} interrupted the music`);
+
+// ---------------------------------------------------------------------------
+// Pass 4 — random walkers
 // ---------------------------------------------------------------------------
 
 /** Drag a random knob somewhere random. */
@@ -523,7 +594,7 @@ for (let step = 0; step < STEPS; step++) {
     break;
   }
 }
-console.log(`Pass 3  walked ${walked} random steps`);
+console.log(`Pass 4  walked ${walked} random steps`);
 
 // ---------------------------------------------------------------------------
 
