@@ -13,3 +13,5 @@ data/
 renders/
 # Screenshots written by the UI verification run.
 motif/tests/ui/shots/
+# Built packages.
+motif/build/dist/
