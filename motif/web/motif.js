@@ -65,11 +65,11 @@ const TRACK_COLOURS = ['#ff5c7a', '#ffb86b', '#5ee6c5', '#ffd479',
 // styled range input. 270 degrees of travel, the way a hardware pot reads.
 // --------------------------------------------------------------------------
 
-function knob(label, value, display, tint, onChange, bipolar = false) {
+function knob(label, value, display, tint, onChange, bipolar = false, size = 42) {
   const wrap = document.createElement('div');
   wrap.className = 'knob';
   const c = document.createElement('canvas');
-  const size = 42, dpr = window.devicePixelRatio || 1;
+  const dpr = window.devicePixelRatio || 1;
   c.width = size * dpr; c.height = size * dpr;
   c.style.width = c.style.height = size + 'px';
   const g = c.getContext('2d');
@@ -2160,30 +2160,117 @@ function renderSound() {
  * control cannot drift out of step with the thing it edits, and a parameter
  * added to the engine appears here without the interface being touched.
  */
+/**
+ * Where each control belongs, and what colour it takes.
+ *
+ * Grouping by what a control does - the tone, the filter, the shape over time -
+ * is most of what makes a synth readable. A flat row of identical knobs is a
+ * list of names you have to read one at a time to find anything.
+ */
+const PARAM_GROUPS = [
+  { name: 'TONE', tint: '#ff5c7a',
+    hint: 'What the sound is made of, before anything is done to it.',
+    ids: ['unison', 'detune', 'spread', 'octave', 'sub', 'fmRatio', 'fmIndex',
+          'tune', 'pitchMod', 'pitchTime', 'noise', 'snap'] },
+  { name: 'FILTER', tint: '#5ee6c5',
+    hint: 'What is taken away. Cutoff is the line; the envelope moves it.',
+    ids: ['cutoff', 'resonance', 'filterEnv', 'keyTrack'] },
+  { name: 'SHAPE', tint: '#ffb86b',
+    hint: 'How it behaves over the length of a note.',
+    ids: ['ampAttack', 'ampDecay', 'ampSustain', 'ampRelease',
+          'fltAttack', 'fltDecay', 'fltSustain', 'fltRelease', 'decay'] },
+  { name: 'OUTPUT', tint: '#c77dff',
+    hint: 'Saturation and level, after everything else.',
+    ids: ['drive', 'gain'] },
+];
+
+const groupOf = (id) =>
+  PARAM_GROUPS.find((g) => g.ids.includes(id)) ?? PARAM_GROUPS[0];
+
 function renderParams() {
   const host = $('#params');
   host.innerHTML = '';
   if (!params.length) return;
 
-  for (const p of params) {
-    if (p.choices) { host.append(choiceControl(p)); continue; }
-
-    const send = (norm) => api.send('param', { track: selected, id: p.id, value: norm });
-    // A real colour, not var(--c): the knob is drawn into a canvas, and canvas
-    // has no idea what a CSS custom property is - it silently draws nothing.
-    const tint = hex(state.tracks[selected].colour);
-    const wrap = knob(p.label, p.norm, formatParam(p, p.value), tint, (v) => {
-      p.norm = v;
-      p.value = denorm(p, v);
-      wrap.querySelector('output').textContent = formatParam(p, p.value);
-      send(v);
-    });
-    wrap.classList.add('param');
-    // The explanation is the point. Hover on the control that raised the
-    // question, rather than in documentation nobody opens.
-    wrap.title = `${p.label}\n\n${p.help}`;
-    host.append(wrap);
+  // Discrete choices first, side by side across the top: engine and waveform
+  // decide what everything below them means.
+  const choices = params.filter((p) => p.choices);
+  if (choices.length) {
+    const head = document.createElement('div');
+    head.className = 'pchoices';
+    for (const p of choices) head.append(choiceControl(p));
+    host.append(head);
   }
+
+  for (const group of PARAM_GROUPS) {
+    const mine = params.filter((p) => !p.choices && groupOf(p.id) === group);
+    if (!mine.length) continue;
+
+    const panel = document.createElement('section');
+    panel.className = 'pgroup';
+    panel.style.setProperty('--g', group.tint);
+    panel.innerHTML = `<h4>${group.name}</h4><p class="pgroup-hint">${group.hint}</p>`;
+
+    const row = document.createElement('div');
+    row.className = 'pgroup-knobs';
+    for (const p of mine) {
+      const send = (norm) => api.send('param', { track: selected, id: p.id, value: norm });
+      // A real colour, not var(--c): the knob is drawn into a canvas, and
+      // canvas has no idea what a CSS custom property is.
+      const wrap = knob(p.label, p.norm, formatParam(p, p.value), group.tint, (v) => {
+        p.norm = v;
+        p.value = denorm(p, v);
+        wrap.querySelector('output').textContent = formatParam(p, p.value);
+        send(v);
+      }, false, 52);
+      wrap.classList.add('param');
+      // The explanation is the point. Hover on the control that raised the
+      // question, rather than in documentation nobody opens.
+      wrap.title = `${p.label}\n\n${p.help}`;
+      row.append(wrap);
+    }
+    panel.append(row);
+    host.append(panel);
+  }
+
+  host.append(channelPanel());
+}
+
+/**
+ * The armed track's channel, here rather than in the mixer.
+ *
+ * Shaping a sound and placing it in the mix are the same act, and making
+ * someone change view between the two turns one decision into two.
+ */
+function channelPanel() {
+  const t = state.tracks[selected];
+  const panel = document.createElement('section');
+  panel.className = 'pgroup';
+  panel.style.setProperty('--g', hex(t.colour));
+  panel.innerHTML = `<h4>CHANNEL &mdash; ${esc(t.name)}</h4>`
+    + `<p class="pgroup-hint">Where this track sits against the others. `
+    + `${state.sidechainSource >= 0 && state.sidechainSource !== selected
+        ? `DUCK is how far it drops each time ${esc(state.tracks[state.sidechainSource]?.name ?? '')} hits.`
+        : 'The same controls as the mixer, kept here so you are not changing view to place a sound.'}</p>`;
+
+  const row = document.createElement('div');
+  row.className = 'pgroup-knobs';
+  const c = hex(t.colour);
+  row.append(
+    knob('LEVEL', t.mixer.gain / 1.5, pct(t.mixer.gain / 1.5) + '%', c,
+         (v) => api.send('gain', { track: selected, value: v * 1.5 }), false, 52),
+    knob('PAN', (t.mixer.pan + 1) / 2,
+         Math.abs(t.mixer.pan) < 0.02 ? 'C' : (t.mixer.pan < 0 ? 'L' : 'R') + pct(Math.abs(t.mixer.pan)),
+         c, (v) => api.send('pan', { track: selected, value: v * 2 - 1 }), true, 52),
+    knob('VERB', t.mixer.reverb, pct(t.mixer.reverb) + '%', '#ffb86b',
+         (v) => api.send('send', { track: selected, which: 'reverb', value: v }), false, 52),
+    knob('DELAY', t.mixer.delay, pct(t.mixer.delay) + '%', '#c77dff',
+         (v) => api.send('send', { track: selected, which: 'delay', value: v }), false, 52),
+    knob('DUCK', t.mixer.duck, pct(t.mixer.duck) + '%', '#ffd479',
+         (v) => api.send('send', { track: selected, which: 'duck', value: v }), false, 52),
+  );
+  panel.append(row);
+  return panel;
 }
 
 /**
@@ -2513,14 +2600,71 @@ function shapeKey() {
     // curve changes what is drawn on it.
     selectedSection, state.songMode, state.section,
     JSON.stringify(state.scenes), JSON.stringify(state.arrangement),
-    state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.length,
     state.tracks.map((t) => (t.mixer.mute ? 'm' : '') + (t.mixer.solo ? 's' : '')).join(''),
-    selectedStep,
-    // Every visible pattern, not just which steps are on: editing a velocity
-    // or a ratchet has to redraw, and the grid shows all the tracks at once,
-    // so a change to any of them is a change to what is on screen.
-    state.tracks.map((t) => JSON.stringify(t.patterns[t.activePattern])).join(''),
+    // How many cells each row needs and where the beat lines fall - the layout
+    // itself. What is *in* a cell is deliberately not here: toggling one step
+    // used to change this key, which rebuilt every row of every track, threw
+    // away about two hundred elements to change one of them, and took the
+    // hover and pressed state of whatever was under the pointer with it.
+    // Editing while playing felt broken because of it.
+    state.tracks.map((t) => {
+      const p = t.patterns[t.activePattern];
+      return p ? `${p.length}/${p.resolution}` : '-';
+    }).join(','),
+    // The steps view is built per step rather than synced, so it still needs
+    // its own pattern in the key.
+    view === 'steps' ? selectedStep : 0,
+    view === 'steps'
+      ? JSON.stringify(state.tracks[selected]?.patterns[state.tracks[selected].activePattern])
+      : '',
   ].join('#');
+}
+
+/**
+ * Bring the grid's cells up to date without rebuilding them.
+ *
+ * Runs on every poll. Only classes and labels are touched, so a cell the
+ * pointer is on stays the same element - which is what makes editing while the
+ * transport is running feel like editing rather than fighting.
+ */
+function syncGridCells() {
+  const rows = document.querySelectorAll('#grid-rows .grow');
+  state.tracks.forEach((t, ti) => {
+    const row = rows[ti];
+    const pat = patternOf(t);
+    if (!row || !pat) return;
+    const pitched = !t.isDrum;
+    const span = pitched ? pitchSpan(pat) : null;
+
+    row.querySelectorAll('.gcell').forEach((el, i) => {
+      const step = i % pat.length;
+      const s = pat.steps[step];
+      if (!s) return;
+
+      el.classList.toggle('on', !!s.on);
+      el.classList.toggle('picked', isSelected(ti, step));
+      el.classList.toggle('here', state.playing && step === t.step);
+      if (s.on) el.style.setProperty('--v', 0.35 + 0.65 * s.vel);
+
+      if (!pitched) return;
+      // The note label and its height in the line, which change when a step is
+      // retuned or switched on.
+      const want = s.on ? noteName(stepNote(s)) : '';
+      const label = el.querySelector('.note');
+      if (!s.on) { if (label) el.innerHTML = ''; return; }
+      if (!label) {
+        const h = span ? (stepNote(s) - span.lo) / span.range : 0.5;
+        el.innerHTML = `<span class="pitchbar" style="bottom:${26 + h * 58}%"></span>`
+                     + `<span class="note">${want}</span>`;
+        return;
+      }
+      if (label.textContent !== want) label.textContent = want;
+      const bar = el.querySelector('.pitchbar');
+      if (bar && span) {
+        bar.style.bottom = `${26 + ((stepNote(s) - span.lo) / span.range) * 58}%`;
+      }
+    });
+  });
 }
 
 let lastShape = null;
@@ -2566,16 +2710,11 @@ function refreshLive() {
   }
 
   if (view === 'grid') {
-    // Every track has its own playhead: with different pattern lengths they
-    // are genuinely in different places, and showing one bar sweeping all of
-    // them would be a lie about what the engine is doing.
-    document.querySelectorAll('#grid-rows .grow').forEach((row, ti) => {
-      const t = state.tracks[ti];
-      const pat = t?.patterns[t.activePattern];
-      if (!pat) return;
-      row.querySelectorAll('.gcell').forEach((el, i) =>
-        el.classList.toggle('here', state.playing && (i % pat.length) === t.step));
-    });
+    // Cell contents and each track's own playhead. With different pattern
+    // lengths the playheads are genuinely in different places, and one bar
+    // sweeping all of them would be a lie about what the engine is doing.
+    syncGridCells();
+    renderSelectionBar();
   }
 }
 
