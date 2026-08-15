@@ -975,12 +975,24 @@ const beatsOf = (t) => {
   return p ? p.length / Math.max(1, p.resolution) : 4;
 };
 
+/**
+ * How much time the grid shows, in bars. Null follows the longest pattern.
+ *
+ * Separate from pattern length on purpose. How much of the music you want to
+ * look at and how long a part happens to be are different questions, and
+ * tying them together means the only way to see two bars is to make something
+ * two bars long.
+ */
+let gridBars = null;
+
 /** The window every row is drawn across, in beats. */
 function gridSpanBeats() {
+  const beatsPerBar = state.beatsPerBar || 4;
+  if (gridBars) return gridBars * beatsPerBar;
   const longest = Math.max(...state.tracks.map(beatsOf), 1);
-  // Rounded up to a whole beat so the ruler lands on beats, and capped so a
-  // very long pattern does not squeeze everything else into nothing.
-  return Math.min(Math.ceil(longest - 1e-9), 32);
+  // Rounded up to a whole bar when following the content, so the ruler starts
+  // each bar at 1 rather than part way through one.
+  return Math.min(Math.ceil((longest - 1e-9) / beatsPerBar) * beatsPerBar, 64);
 }
 
 /** How many cells a track needs to cover the window at its own rate. */
@@ -1021,6 +1033,41 @@ function pitchSpan(pat) {
   return { lo, hi, range: Math.max(hi - lo, 4) };
 }
 
+/**
+ * How much of the music the grid is showing, and how much you want to see.
+ *
+ * "Fit" follows the longest pattern, which is what you want while writing one
+ * loop. A fixed number of bars is what you want when tracks are different
+ * lengths and you are trying to see where they line up again.
+ */
+function renderSpanControl(spanBeats, beatsPerBar) {
+  const host = $('#grid-span');
+  host.innerHTML = '<span class="tools-hint">SHOWING</span>';
+
+  const cycle = state.cycle || 0;
+  // Stops at eight: a 1/32 track over eight bars is 256 cells in a row, and
+  // past that a step is too thin to aim at.
+  const options = [[null, 'Fit'], [1, '1 bar'], [2, '2'], [4, '4'], [8, '8']];
+  for (const [bars, label] of options) {
+    const b = document.createElement('button');
+    b.className = 'chip tiny' + (gridBars === bars ? ' on' : '');
+    b.textContent = label;
+    b.title = bars === null
+      ? 'Follow the longest pattern. Best while you are writing one loop.'
+      : `Show ${bars} bar${bars === 1 ? '' : 's'} whatever the patterns are. `
+        + 'Shorter ones repeat, dimmed, so you can see where they land.';
+    b.onclick = () => { gridBars = bars; lastShape = null; render(); };
+    host.append(b);
+  }
+
+  const note = document.createElement('span');
+  note.className = 'span-note';
+  const bars = spanBeats / beatsPerBar;
+  note.textContent = `${bars} bar${bars === 1 ? '' : 's'}`
+    + (cycle > 1 ? `  ·  the tracks line up again every ${cycle} steps` : '');
+  host.append(note);
+}
+
 function renderGrid() {
   const spanBeats = gridSpanBeats();
   const beatsPerBar = state.beatsPerBar || 4;
@@ -1032,19 +1079,30 @@ function renderGrid() {
   const marks = document.createElement('div');
   marks.className = 'gr-marks';
   marks.style.gridTemplateColumns = `repeat(${spanBeats},1fr)`;
+  // Past a couple of bars, numbering every beat is noise you have to read
+  // past: "1 2 3 4 2 2 3 4 3 2 3 4" is worse than four bar numbers.
+  const beatsToo = spanBeats <= beatsPerBar * 2;
   for (let b = 0; b < spanBeats; b++) {
     const m = document.createElement('span');
     const bar = Math.floor(b / beatsPerBar) + 1;
     const beat = (b % beatsPerBar) + 1;
     m.className = beat === 1 ? 'bar' : 'beat';
-    m.textContent = beat === 1 ? String(bar) : String(beat);
+    m.textContent = beat === 1 ? String(bar) : (beatsToo ? String(beat) : '');
     marks.append(m);
   }
   ruler.append(marks);
+  renderSpanControl(spanBeats, beatsPerBar);
 
   const host = $('#grid-rows');
   host.innerHTML = '';
   attachBoxSelect(host);
+
+  // Cells get thinner as the window widens, so the gap between them and their
+  // height have to come down with it - otherwise sixty-four gaps of 4px eat
+  // more width than the cells do, and rows this tall push tracks off screen.
+  const widest = Math.max(...state.tracks.map((t) => cellsFor(t, spanBeats)), 1);
+  host.style.setProperty('--gap', widest > 48 ? '1px' : widest > 24 ? '2px' : '4px');
+  host.style.setProperty('--cell-h', widest > 48 ? '22px' : widest > 24 ? '26px' : '30px');
 
   state.tracks.forEach((t, ti) => {
     const pat = t.patterns[t.activePattern];
@@ -1057,19 +1115,22 @@ function renderGrid() {
 
     const head = document.createElement('div');
     head.className = 'grow-head';
-    head.innerHTML =
-      `<div class="gh-name">${esc(t.name)}</div>
-       <div class="gh-sub">${esc(pat.name)} &middot; ${pat.length}</div>`;
+    head.innerHTML = `<div class="gh-name">${esc(t.name)}</div>`;
 
-    // Rate, as a note value rather than a step count. "1/16" is the thing you
-    // mean; "4 steps per beat" is how it happens to be stored.
+    // Pattern, length and rate on one line. The rate is a note value rather
+    // than a step count: "1/16" is the thing you mean, "4 steps per beat" is
+    // how it happens to be stored.
+    const sub = document.createElement('div');
+    sub.className = 'gh-sub';
+    sub.innerHTML = `<span>${esc(pat.name)} &middot; ${pat.length}</span>`;
     const rate = document.createElement('button');
     rate.className = 'gh-rate';
     rate.textContent = RATE_LABEL[pat.resolution] || `${pat.resolution}/beat`;
     rate.title = 'How fast this track\'s steps run. Each track has its own, so '
       + 'a hat can run at 1/32 under a bass at 1/8.';
     rate.onclick = (e) => { e.stopPropagation(); openRateMenu(ti, e.currentTarget); };
-    head.append(rate);
+    sub.append(rate);
+    head.append(sub);
 
     // Level, so balancing is by eye as well as by ear.
     const meter = document.createElement('div');

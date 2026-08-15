@@ -161,22 +161,28 @@ section { padding:14px; overflow:auto; min-width:0; }
 .swatch.on { border-color:var(--text); }
 
 /* ---------- grid: every track at once ---------- */
-#view-grid.on { display:grid; grid-template-rows:auto 1fr auto; height:100%; min-height:0; }
+#view-grid.on { display:grid; grid-template-rows:auto auto 1fr auto; height:100%; min-height:0; }
 
-.grid-ruler { display:grid; grid-template-columns:150px 1fr; gap:8px; margin-bottom:7px; }
+.grid-span { display:flex; align-items:center; gap:5px; margin-bottom:9px; flex-wrap:wrap; }
+.span-note { font:10px var(--mono); color:var(--dimmer); margin-left:6px; }
+
+.grid-ruler { display:grid; grid-template-columns:172px 1fr; gap:8px; margin-bottom:7px; }
 .gr-marks { display:grid; gap:4px; }
 .gr-marks span { font:600 9px var(--mono); color:#39415a; text-align:left;
                  padding-left:3px; }
 .gr-marks span.beat { color:var(--dimmer); }
 .gr-marks span.bar { color:var(--text); }
 
-.grid-rows { display:flex; flex-direction:column; gap:5px; align-content:start;
-             overflow-y:auto; min-height:0; }
-.grow { display:grid; grid-template-columns:150px 1fr; gap:8px; align-items:stretch; }
+.grid-rows { display:flex; flex-direction:column; gap:4px; align-content:start;
+             overflow-y:auto; overflow-x:hidden; min-height:0; }
+.grow { display:grid; grid-template-columns:172px minmax(0,1fr); gap:8px; align-items:stretch; }
 .grow.muted { opacity:.42; }
 
-.grow-head { display:grid; grid-template-columns:1fr auto; align-content:center; gap:1px 6px;
-             padding:6px 9px 7px 12px; position:relative; border-radius:8px;
+/* Three lines, not four: the rate sits beside the pattern name rather than on
+   a row of its own, which is the difference between four tracks fitting on
+   screen and six. */
+.grow-head { display:grid; grid-template-columns:1fr auto; align-content:center; gap:0 6px;
+             padding:5px 8px 5px 11px; position:relative; border-radius:8px;
              background:rgba(22,28,41,.5); border:1px solid var(--line); cursor:pointer; }
 .grow-head:hover { border-color:#33405a; }
 .grow.sel .grow-head { border-color:var(--c);
@@ -199,8 +205,8 @@ section { padding:14px; overflow:auto; min-width:0; }
              border-top:1px solid var(--line-soft); margin-top:4px; max-width:250px; }
 .groove-knobs { grid-template-columns:repeat(3,1fr); padding:2px 9px 8px; }
 
-.grow-cells { display:grid; gap:4px; }
-.gcell { position:relative; border-radius:5px; min-height:30px;
+.grow-cells { display:grid; gap:var(--gap,4px); min-width:0; }
+.gcell { position:relative; border-radius:4px; min-height:var(--cell-h,30px); min-width:0;
          background:var(--ink2); border:1px solid var(--line); transition:.07s; }
 .gcell.beat { background:var(--ink3); }
 .gcell.on { background:color-mix(in srgb, var(--c) calc(var(--v) * 100%), var(--ink0));
@@ -424,12 +430,12 @@ input[type=range]::-webkit-slider-thumb:active { cursor:grabbing; }
 .take:not(.has-take) .take-controls { display:none; }
 
 /* ---------- track rate + meters ---------- */
-.gh-rate { grid-column:1; grid-row:3; justify-self:start; margin-top:3px;
-           padding:2px 6px; border-radius:4px; background:var(--ink0);
-           border:1px solid var(--line); font:600 8.5px var(--mono); color:var(--dim); }
+.gh-sub { display:flex; align-items:center; gap:5px; }
+.gh-rate { padding:1px 5px; border-radius:4px; background:var(--ink0);
+           border:1px solid var(--line); font:600 8px var(--mono); color:var(--dim); }
 .gh-rate:hover { border-color:var(--fitted); color:var(--fitted); }
-.gh-meter { grid-column:1/3; grid-row:4; height:3px; border-radius:2px;
-            background:rgba(0,0,0,.4); overflow:hidden; margin-top:5px; }
+.gh-meter { grid-column:1/3; grid-row:3; height:3px; border-radius:2px;
+            background:rgba(0,0,0,.4); overflow:hidden; margin-top:4px; }
 .gh-meter i { display:block; height:100%; width:0; background:var(--c);
               transition:width .06s linear; }
 

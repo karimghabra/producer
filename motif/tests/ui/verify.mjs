@@ -475,6 +475,55 @@ await cmd({ type: 'patternResolution', track: 2, value: 8 });
 await cmd({ type: 'patternLength', track: 2, value: 32 });
 await page.waitForTimeout(500);
 
+// How much time the grid shows is a separate question from how long a pattern
+// is, and asking for four bars must not require making something four bars.
+await cmd({ type: 'newSong' });
+await page.waitForTimeout(450);
+const spanBars = async () => {
+  const marks = await page.locator('#grid-ruler .gr-marks span').count();
+  return marks / ((await engine()).beatsPerBar || 4);
+};
+check(await spanBars() === 1, 'the grid follows the longest pattern by default',
+      `${await spanBars()} bar`);
+
+await page.locator('#grid-span .chip', { hasText: /^4$/ }).click();
+await page.waitForTimeout(500);
+check(await spanBars() === 4, 'asking for four bars shows four bars',
+      `${await spanBars()} bars`);
+const spanCells = await page.locator('#grid-rows .grow').first().locator('.gcell').count();
+const spanGhosts = await page.locator('#grid-rows .grow').first().locator('.gcell.ghost').count();
+check(spanCells === 64 && spanGhosts === 48,
+      'a one-bar pattern fills them by repeating, dimmed',
+      `${spanCells} cells, ${spanGhosts} of them the repeat`);
+check((await engine()).tracks[0].patterns[0].length === 16,
+      'and the pattern itself is untouched',
+      `${(await engine()).tracks[0].patterns[0].length} steps`);
+
+// Every track still has to fit, and nothing may scroll sideways.
+const visibleRows = await page.evaluate(() => {
+  const box = document.querySelector('#grid-rows').getBoundingClientRect();
+  return [...document.querySelectorAll('#grid-rows .grow')]
+    .filter((r) => r.getBoundingClientRect().bottom <= box.bottom + 1).length;
+});
+check(visibleRows === 6, 'and all six tracks still fit on screen',
+      `${visibleRows} of 6 rows visible`);
+const sideways = await page.evaluate(() => {
+  const el = document.querySelector('#grid-rows');
+  return el.scrollWidth - el.clientWidth;
+});
+check(sideways <= 1, 'without the grid scrolling sideways', `${sideways}px`);
+
+await page.locator('#grid-span .chip', { hasText: 'Fit' }).click();
+await page.waitForTimeout(400);
+
+// Put back the mixed rates the checks below are about - the new song above
+// reset them.
+await cmd({ type: 'patternResolution', track: 0, value: 1 });
+await cmd({ type: 'patternLength', track: 0, value: 4 });
+await cmd({ type: 'patternResolution', track: 2, value: 8 });
+await cmd({ type: 'patternLength', track: 2, value: 32 });
+await page.waitForTimeout(500);
+
 // The ruler counts beats, and belongs to no track in particular.
 const rulerMarks = await page.locator('#grid-ruler .gr-marks span').allTextContents();
 check(rulerMarks.join(',') === '1,2,3,4', 'the ruler counts beats, not steps',
