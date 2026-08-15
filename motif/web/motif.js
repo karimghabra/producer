@@ -23,7 +23,6 @@ let presets = { drums: [], synths: [] };
 let view = 'grid';
 let selected = 0;
 let selectedStep = 0;
-const heldKeys = new Set();
 
 // True while a control is being dragged.
 //
@@ -2343,47 +2342,21 @@ function choiceControl(p) {
 // bassline and the hook over it.
 // --------------------------------------------------------------------------
 
-const PIANO_KEYS = [
-  ['a', 0, 0], ['w', 1, 1], ['s', 2, 0], ['e', 3, 1], ['d', 4, 0], ['f', 5, 0],
-  ['t', 6, 1], ['g', 7, 0], ['y', 8, 1], ['h', 9, 0], ['u', 10, 1], ['j', 11, 0],
-  ['k', 12, 0], ['o', 13, 1], ['l', 14, 0],
-];
-const SCALE_ROW_LOW  = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
-const SCALE_ROW_HIGH = ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o'];
+// --------------------------------------------------------------------------
+// The performance layer
+//
+// Forty physical keys, four layers deep, always on screen. Every key says what
+// it does, so the instrument is readable without being memorised - which is
+// the difference between a grid of pads and a list of shortcuts.
+//
+// Addressed by event.code rather than by the character produced, so the layout
+// is the physical shape of the keyboard and does not move with the language.
+// --------------------------------------------------------------------------
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
-let scaleLock = true;
-let octave = 0;
-
-/** What each key plays right now. Keyed by the character you press. */
-function keyMap() {
-  const map = new Map();
-  if (!scaleLock) {
-    for (const [k, semi, black] of PIANO_KEYS)
-      map.set(k, { semi, black, label: NOTE_NAMES[(48 + semi) % 12] });
-    return map;
-  }
-  const degrees = state?.key?.degrees ?? 7;
-  SCALE_ROW_LOW.forEach((k, i) => map.set(k, { degree: i, row: 0, tonic: i % degrees === 0 }));
-  SCALE_ROW_HIGH.forEach((k, i) => map.set(k, { degree: i + degrees, row: 1,
-                                                tonic: (i + degrees) % degrees === 0 }));
-  return map;
-}
-
-/** MIDI note a mapped key sounds, for labelling. Mirrors Theory.h. */
-function noteForKey(info) {
-  if (!scaleLock) return 48 + 12 * octave + info.semi;
-  const steps = SCALE_STEPS[state?.key?.scaleIndex ?? 0] ?? SCALE_STEPS[0];
-  const n = steps.length;
-  const d = info.degree;
-  const wrapped = ((d % n) + n) % n;
-  const shift = Math.floor(d / n);
-  return 12 * (5 + octave + shift) + (state?.key?.root ?? 0) + steps[wrapped];
-}
-
-// Same tables as Theory.h. Only used for labelling the keys - every note that
-// actually sounds is worked out by the engine from the same scale.
+// The same tables as Theory.h. Only used for naming what is on screen - every
+// note that actually sounds is worked out by the engine from the same scale.
 const SCALE_STEPS = [
   [0, 2, 3, 5, 7, 8, 10], [0, 2, 4, 5, 7, 9, 11], [0, 2, 3, 5, 7, 9, 10],
   [0, 1, 3, 5, 7, 8, 10], [0, 2, 4, 6, 7, 9, 11], [0, 2, 4, 5, 7, 9, 10],
@@ -2397,79 +2370,149 @@ const SCALE_NAMES = [
   'Blues', 'Whole Tone', 'Chromatic',
 ];
 
-/**
- * When this key event happened, in seconds.
- *
- * Read here, at the moment of the press, and sent with the note. A request can
- * queue behind others or be overtaken by a later one, and timestamping it on
- * arrival made the recorded rhythm the rhythm of the network - which shows up
- * as a take that fits badly precisely when the interface is busy.
- */
-const now = () => performance.now() / 1000;
+const PAD_ROWS = [
+  ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5',
+   'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0'],
+  ['KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP'],
+  ['KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyG', 'KeyH', 'KeyJ', 'KeyK', 'KeyL', 'Semicolon'],
+  ['KeyZ', 'KeyX', 'KeyC', 'KeyV', 'KeyB', 'KeyN', 'KeyM', 'Comma', 'Period', 'Slash'],
+];
+const PAD_LABELS = { Semicolon: ';', Comma: ',', Period: '.', Slash: '/' };
+const padCodes = PAD_ROWS.flat();
+const padIndexOf = (code) => padCodes.indexOf(code);
+const padKeyLabel = (code) =>
+  PAD_LABELS[code] ?? code.replace(/^Key|^Digit/, '');
 
-function playKey(k) {
-  const info = keyMap().get(k);
-  if (!info || heldKeys.has(k)) return;
-  const at = now();
-  heldKeys.add(k);
-  if (scaleLock) api.send('noteOnDegree', { degree: info.degree, octave, velocity: 0.85, at });
-  else           api.send('noteOn', { note: 48 + 12 * octave + info.semi, velocity: 0.85, at });
-  renderKeys();
+let keymap = null;
+let layer = 0;
+let octave = 0;
+const heldPads = new Set();
+
+async function loadKeymap(force = false) {
+  if (keymap && !force) return;
+  keymap = await (await fetch('/api/keymap')).json();
+  padsShape = null;
+  renderPads();
 }
 
-function releaseKey(k) {
-  const info = keyMap().get(k);
-  if (!info || !heldKeys.has(k)) return;
-  const at = now();
-  heldKeys.delete(k);
-  if (scaleLock) api.send('noteOffDegree', { degree: info.degree, octave, at });
-  else           api.send('noteOff', { note: 48 + 12 * octave + info.semi, at });
-  renderKeys();
+const cellAt = (l, i) => keymap?.layers?.[l]?.cells?.[i] ?? null;
+
+function pressPad(index) {
+  if (index < 0 || heldPads.has(index)) return;
+  const cell = cellAt(layer, index);
+  if (!cell || cell.mode === 'empty') return;
+  heldPads.add(index);
+  api.send('cellDown', { layer, cell: index, velocity: 1 });
+  paintPads();
 }
 
-let keysShape = null;
+function releasePad(index) {
+  if (!heldPads.has(index)) return;
+  heldPads.delete(index);
+  api.send('cellUp', { layer, cell: index });
+  paintPads();
+}
 
-function renderKeys() {
-  const host = $('#keys');
-  const map = keyMap();
-  const shape = `${scaleLock}|${octave}|${state?.key?.root}|${state?.key?.scaleIndex}`;
+function setLayer(n) {
+  const next = Math.max(0, Math.min(3, n));
+  if (next === layer) return;
+  // Everything held belongs to the layer it was pressed on, and the key that
+  // would release it is about to mean something else.
+  api.send('cellsOff');
+  heldPads.clear();
+  layer = next;
+  padsShape = null;
+  renderPads();
+}
 
-  if (shape === keysShape) {
-    host.querySelectorAll('.key').forEach(
-      (el) => el.classList.toggle('down', heldKeys.has(el.dataset.k)));
-    return;
-  }
-  keysShape = shape;
+let padsShape = null;
+
+function renderPads() {
+  const host = $('#pads');
+  if (!keymap) return;
+
+  const shape = `${layer}#${JSON.stringify(keymap.layers[layer]?.cells?.map(
+    (c) => c.label + c.mode + c.colour))}`;
+  if (shape === padsShape) { paintPads(); return; }
+  padsShape = shape;
+
   host.innerHTML = '';
-  host.classList.toggle('two-row', scaleLock);
+  PAD_ROWS.forEach((row, r) => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'pad-row';
+    row.forEach((code, c) => {
+      const index = r * 10 + c;
+      const cell = cellAt(layer, index);
+      const el = document.createElement('button');
+      el.className = 'pad ' + (cell?.mode ?? 'empty');
+      el.dataset.i = String(index);
+      if (cell?.colour) el.style.setProperty('--c', hex(cell.colour));
 
-  const build = (chars) => {
-    const row = document.createElement('div');
-    row.className = 'key-row';
-    for (const k of chars) {
-      const info = map.get(k);
-      const el = document.createElement('div');
-      el.className = 'key'
-        + (info.black ? ' black' : '')
-        + (info.tonic ? ' tonic' : '');
-      el.dataset.k = k;
-      const note = noteForKey(info);
-      el.innerHTML = `<b>${k.toUpperCase()}</b>`
-        + `<span>${NOTE_NAMES[((note % 12) + 12) % 12]}${Math.floor(note / 12) - 1}</span>`;
-      // Playable with the mouse too, for anyone who would rather point at it.
-      el.addEventListener('pointerdown', () => playKey(k));
-      el.addEventListener('pointerup', () => releaseKey(k));
-      el.addEventListener('pointerleave', () => releaseKey(k));
-      row.append(el);
-    }
-    return row;
-  };
+      el.innerHTML = `<b>${padKeyLabel(code)}</b>`
+        + `<span>${esc(cell?.label ?? '')}</span>`;
+      if (cell && cell.mode !== 'empty' && cell.quantize !== 'off') {
+        el.innerHTML += `<i class="pad-q">${cell.quantize}</i>`;
+      }
+      el.title = cell && cell.mode !== 'empty'
+        ? `${cell.label}
+${PAD_MODE_HELP[cell.mode] ?? ''}`
+          + (cell.quantize !== 'off' ? `
+Launches on the next ${cell.quantize}.` : '')
+        : 'Nothing mapped here';
 
-  if (scaleLock) host.append(build(SCALE_ROW_HIGH), build(SCALE_ROW_LOW));
-  else           host.append(build(PIANO_KEYS.map(([k]) => k)));
+      el.addEventListener('pointerdown', (e) => { e.preventDefault(); pressPad(index); });
+      el.addEventListener('pointerup', () => releasePad(index));
+      el.addEventListener('pointerleave', () => releasePad(index));
+      rowEl.append(el);
+    });
+    host.append(rowEl);
+  });
+  renderLayerTabs();
+  paintPads();
+}
 
-  host.querySelectorAll('.key').forEach(
-    (el) => el.classList.toggle('down', heldKeys.has(el.dataset.k)));
+const PAD_MODE_HELP = {
+  hit: 'Fires this track once, wherever the transport is.',
+  note: 'A note in the song’s key, held while you hold the key.',
+  chord: 'A chord built from the key. You never pick the quality; the key does.',
+  pattern: 'Launches that pattern on that track.',
+  scene: 'Launches a whole scene across every track.',
+  record: 'Arms recording on that track. Press again to fit what you played.',
+};
+
+function renderLayerTabs() {
+  const host = $('#layers');
+  host.innerHTML = '';
+  (keymap?.layers ?? []).forEach((l, i) => {
+    const b = document.createElement('button');
+    b.className = 'layer-tab' + (i === layer ? ' on' : '');
+    b.innerHTML = `<b>F${i + 1}</b>${esc(l.name)}`;
+    b.title = `Layer ${i + 1}: ${l.name}`;
+    b.onclick = () => setLayer(i);
+    host.append(b);
+  });
+}
+
+/** Held and queued states only - no rebuilding while a finger is down. */
+function paintPads() {
+  const waiting = new Set();
+  const p = state?.pending ?? [];
+  for (let i = 0; i + 1 < p.length; i += 2) if (p[i] === layer) waiting.add(p[i + 1]);
+
+  document.querySelectorAll('#pads .pad').forEach((el) => {
+    const i = Number(el.dataset.i);
+    el.classList.toggle('down', heldPads.has(i));
+    el.classList.toggle('queued', waiting.has(i));
+  });
+}
+
+function setOctave(v) {
+  const next = Math.max(-3, Math.min(3, v));
+  if (next === octave) return;
+  api.send('cellsOff');
+  heldPads.clear();
+  octave = next;
+  $('#oct-value').textContent = (octave > 0 ? '+' : '') + octave;
 }
 
 /**
@@ -2572,18 +2615,6 @@ function openKeyMenu(anchor) {
   menu.style.left = Math.min(box.left, innerWidth - menu.offsetWidth - 8) + 'px';
   menu.style.top = box.top - menu.offsetHeight - 6 + 'px';
   setTimeout(() => addEventListener('pointerdown', dismissMenu), 0);
-}
-
-function setOctave(v) {
-  const next = Math.max(-3, Math.min(3, v));
-  if (next === octave) return;
-  // Anything held is sounding at the old octave and would never be told to
-  // stop, because the release would be sent for a note that was never started.
-  api.send('allNotesOff');
-  heldKeys.clear();
-  octave = next;
-  $('#oct-value').textContent = (octave > 0 ? '+' : '') + octave;
-  renderKeys();
 }
 
 /**
@@ -2733,11 +2764,9 @@ function render() {
   if (!state) return;
   const track = state.tracks[selected];
   if (track) document.documentElement.style.setProperty('--c', hex(track.colour));
-  $('#keys').style.setProperty('--c', track ? hex(track.colour) : '#5ee6c5');
 
   $('#project-name').textContent = state.name || 'Untitled';
   $('#key-name').textContent = `${NOTE_NAMES[state.key.root]} ${state.key.scale}`;
-  $('#scale-lock').classList.toggle('on', scaleLock);
   const midi = state.midi || [];
   $('#midi').textContent = midi.length
     ? (midi.length === 1 ? midi[0] : `${midi.length} MIDI inputs`)
@@ -2757,6 +2786,8 @@ function render() {
   if (view === 'steps') renderTake();
   syncTake();
   if (view === 'sound') syncParams();
+  loadKeymap();
+  paintPads();
 
   // Never restructure under a finger that is mid-gesture.
   if (interacting) return;
@@ -2771,7 +2802,7 @@ function render() {
   else if (view === 'mix') renderMix();
   else if (view === 'song') renderSong();
   else renderSound();
-  renderKeys();
+  renderPads();
   refreshLive();
 }
 
@@ -2827,13 +2858,6 @@ document.querySelectorAll('#views .tab').forEach((tab) => {
   };
 });
 
-$('#scale-lock').onclick = () => {
-  api.send('allNotesOff');
-  heldKeys.clear();
-  scaleLock = !scaleLock;
-  $('#scale-lock').classList.toggle('on', scaleLock);
-  renderKeys();
-};
 $('#key-pick').onclick = (e) => openKeyMenu(e.currentTarget);
 $('#oct-down').onclick = () => setOctave(octave - 1);
 $('#oct-up').onclick = () => setOctave(octave + 1);
@@ -2913,12 +2937,17 @@ addEventListener('keydown', (e) => {
   }
 
   if (k === ' ') { e.preventDefault(); api.send(state && state.playing ? 'stop' : 'play'); return; }
+  // F1-F4 shift the whole instrument under your hands without moving them.
+  if (/^F[1-4]$/.test(e.key)) { e.preventDefault(); setLayer(Number(e.key[1]) - 1); return; }
+
+  const pad = padIndexOf(e.code);
+  if (pad >= 0) { e.preventDefault(); pressPad(pad); return; }
   if (k === 'r') { api.send('record'); return; }
-  if (k === 'z') { setOctave(octave - 1); return; }
-  if (k === 'x') { setOctave(octave + 1); return; }
-  playKey(k);
 });
-addEventListener('keyup', (e) => releaseKey(e.key.toLowerCase()));
+addEventListener('keyup', (e) => {
+  const pad = padIndexOf(e.code);
+  if (pad >= 0) releasePad(pad);
+});
 // The take plot is drawn at device pixels for a specific size, so it has to be
 // redrawn whenever that size changes - including when the window is resized.
 addEventListener('resize', () => { if (view === 'steps') drawTake(); });
@@ -2927,10 +2956,10 @@ addEventListener('resize', () => { if (view === 'steps') drawTake(); });
 // engine to drop everything is safer than replaying the releases: the mapping
 // may have changed under the held keys.
 addEventListener('blur', () => {
-  if (!heldKeys.size) return;
-  api.send('allNotesOff');
-  heldKeys.clear();
-  renderKeys();
+  if (!heldPads.size) return;
+  api.send('cellsOff');
+  heldPads.clear();
+  paintPads();
 });
 
 // --------------------------------------------------------------------------
@@ -2943,7 +2972,12 @@ async function poll() {
     render();
     $('#link').textContent = 'engine connected';
   } catch (err) {
-    $('#link').textContent = 'engine not reachable';
+    // Distinguish the two. This catch used to report any exception thrown
+    // while drawing as "engine not reachable", which sent me looking at the
+    // bridge for a fault that was in the interface.
+    const reachable = await fetch('/api/state').then((r) => r.ok).catch(() => false);
+    $('#link').textContent = reachable ? 'interface error - see console' : 'engine not reachable';
+    if (reachable) console.error('render failed:', err);
   }
 }
 

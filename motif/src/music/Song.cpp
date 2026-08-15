@@ -221,7 +221,205 @@ Song makeDefaultSong() {
     song.tracks[3].mixer.reverbSend = 0.20f;   // snare
 
     song.sidechainSource = 0;           // the kick
+    song.keymap = makeDefaultKeyMap(song);
     return song;
+}
+
+// ---------------------------------------------------------------------------
+// The default mapping
+// ---------------------------------------------------------------------------
+
+KeyMap makeDefaultKeyMap(const Song& song) {
+    KeyMap map;
+    const int cols = KeyMap::kCols;
+
+    auto findTrack = [&](std::initializer_list<const char*> names) {
+        for (const char* want : names)
+            for (size_t i = 0; i < song.tracks.size(); ++i)
+                if (song.tracks[i].name == want) return int(i);
+        return -1;
+    };
+    auto firstDrum = [&](int skip) {
+        for (size_t i = 0; i < song.tracks.size(); ++i)
+            if (song.tracks[i].instrument.isDrum && skip-- <= 0) return int(i);
+        return -1;
+    };
+    auto firstPitched = [&](int skip) {
+        for (size_t i = 0; i < song.tracks.size(); ++i)
+            if (!song.tracks[i].instrument.isDrum && skip-- <= 0) return int(i);
+        return -1;
+    };
+
+    const int kick  = findTrack({ "Kick" });
+    const int clap  = findTrack({ "Clap" });
+    const int hats  = findTrack({ "Hats", "Hat" });
+    const int snare = findTrack({ "Snare" });
+    const int bass  = findTrack({ "Bass" });
+    const int lead  = findTrack({ "Lead" });
+
+    auto put = [&](int layer, int index, Cell c) {
+        if (Cell* slot = map.at(layer, index)) *slot = std::move(c);
+    };
+    auto nameOf = [&](int t) {
+        return t >= 0 && t < int(song.tracks.size()) ? song.tracks[size_t(t)].name : std::string();
+    };
+
+    // --- layer 0: the kit ---------------------------------------------------
+    //
+    // Home row is the kit at full velocity, the row above it the same kit
+    // softly. Two rows you can play a beat between without thinking about it.
+    {
+        const int kit[] = { kick, clap, hats, snare, kick, clap, hats, snare,
+                            firstDrum(4), firstDrum(5) };
+        for (int i = 0; i < cols; ++i) {
+            const int t = kit[i] >= 0 ? kit[i] : firstDrum(i % 4);
+            if (t < 0) continue;
+            Cell c;
+            c.mode = CellMode::Hit;
+            c.track = t;
+            c.velocity = i < 4 ? 0.95f : 0.85f;
+            c.label = nameOf(t);
+            put(0, 20 + i, c);
+
+            Cell soft = c;
+            soft.velocity = 0.5f;
+            soft.label = nameOf(t) + " soft";
+            put(0, 10 + i, soft);
+        }
+        // The bottom row plays the kick up the scale - a drum used as an
+        // instrument, which is most of what a modern low end is.
+        for (int i = 0; i < 6 && kick >= 0; ++i) {
+            Cell c;
+            c.mode = CellMode::Hit;
+            c.track = kick;
+            c.degree = i;
+            c.velocity = 0.9f;
+            c.label = "Kick " + std::to_string(i + 1);
+            put(0, 30 + i, c);
+        }
+        // And the number row arms recording, so a take is one key away.
+        for (int i = 0; i < 4; ++i) {
+            const int t = firstPitched(i) >= 0 ? firstPitched(i) : firstDrum(i);
+            if (t < 0) continue;
+            Cell c;
+            c.mode = CellMode::Record;
+            c.track = t;
+            c.behavior = CellBehavior::Toggle;
+            c.label = "Rec " + nameOf(t);
+            put(0, 6 + i, c);
+        }
+    }
+
+    // --- layer 1: the scale -------------------------------------------------
+    {
+        const int melody = lead >= 0 ? lead : firstPitched(0);
+        const int low = bass >= 0 ? bass : firstPitched(1);
+        for (int i = 0; i < cols && melody >= 0; ++i) {
+            Cell c;
+            c.mode = CellMode::Note;
+            c.track = melody;
+            c.degree = i;
+            c.behavior = CellBehavior::Gate;
+            c.label = std::to_string(i + 1);
+            put(1, 20 + i, c);
+
+            Cell up = c;
+            up.degree = i + 7;
+            up.label = std::to_string(i + 8);
+            put(1, 10 + i, up);
+        }
+        for (int i = 0; i < cols && low >= 0; ++i) {
+            Cell c;
+            c.mode = CellMode::Note;
+            c.track = low;
+            c.degree = i;
+            c.octave = -1;
+            c.behavior = CellBehavior::Gate;
+            c.label = "B" + std::to_string(i + 1);
+            put(1, 30 + i, c);
+        }
+        // Chords on the number row, built from the key rather than chosen -
+        // you never pick a quality, the key decides it.
+        const int chordTrack = melody >= 0 ? melody : low;
+        for (int i = 0; i < 7 && chordTrack >= 0; ++i) {
+            Cell c;
+            c.mode = CellMode::Chord;
+            c.track = chordTrack;
+            c.degree = i;
+            c.chordSize = 3;
+            c.behavior = CellBehavior::Gate;
+            c.label = "Chord " + std::to_string(i + 1);
+            put(1, i, c);
+        }
+        if (chordTrack >= 0) {
+            Cell seventh;
+            seventh.mode = CellMode::Chord;
+            seventh.track = chordTrack;
+            seventh.chordSize = 4;
+            seventh.behavior = CellBehavior::Gate;
+            seventh.degree = 0; seventh.label = "I7";   put(1, 7, seventh);
+            seventh.degree = 3; seventh.label = "IV7";  put(1, 8, seventh);
+            seventh.degree = 4; seventh.chordSize = 5; seventh.label = "V9"; put(1, 9, seventh);
+        }
+    }
+
+    // --- layer 2: clips -----------------------------------------------------
+    //
+    // A column per track: three pattern slots and a stop, quantized to the bar
+    // so a launch lands on the downbeat rather than wherever your finger did.
+    {
+        const int columns = std::min(int(song.tracks.size()), cols - 2);
+        for (int col = 0; col < columns; ++col) {
+            for (int row = 0; row < 3; ++row) {
+                Cell c;
+                c.mode = CellMode::Pattern;
+                c.track = col;
+                c.patternIndex = row;
+                c.quantize = Quantize::Bar;
+                c.label = nameOf(col) + " " + std::to_string(row + 1);
+                put(2, row * cols + col, c);
+            }
+            Cell stop;
+            stop.mode = CellMode::Pattern;
+            stop.track = col;
+            stop.patternIndex = -1;
+            stop.quantize = Quantize::Bar;
+            stop.behavior = CellBehavior::Toggle;
+            stop.label = "Stop " + nameOf(col);
+            put(2, 3 * cols + col, stop);
+        }
+        // Scenes in the two spare columns, so they never take a track's stop.
+        for (int i = 0; i < 8 && i < int(song.scenes.size()); ++i) {
+            Cell c;
+            c.mode = CellMode::Scene;
+            c.scene = i;
+            c.quantize = Quantize::Bar;
+            c.label = song.scenes[size_t(i)].name;
+            put(2, (i / 2) * cols + (cols - 2) + (i % 2), c);
+        }
+    }
+
+    // --- layer 3: whatever is armed ----------------------------------------
+    //
+    // Two octaves of the current key on the armed track, so any new sound is
+    // immediately playable without mapping anything.
+    {
+        int armed = 0;
+        for (size_t i = 0; i < song.tracks.size(); ++i) if (song.tracks[i].armed) armed = int(i);
+        for (int i = 0; i < cols; ++i) {
+            Cell c;
+            c.mode = CellMode::Note;
+            c.track = armed;
+            c.behavior = CellBehavior::Gate;
+            c.degree = i;      c.label = std::to_string(i + 1);      put(3, 20 + i, c);
+            c.degree = i + 7;  c.label = std::to_string(i + 8);      put(3, 10 + i, c);
+            c.degree = i - 7;  c.label = std::to_string(i - 6);      put(3, 30 + i, c);
+            c.degree = i + 14; c.label = std::to_string(i + 15);     put(3, i, c);
+        }
+        map.layerNames[3] = "ARMED";
+    }
+
+    return map;
 }
 
 // ---------------------------------------------------------------------------

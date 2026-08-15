@@ -204,6 +204,117 @@ struct MasterFx {
 };
 
 // ---------------------------------------------------------------------------
+// The performance layer
+//
+// Forty physical keys, four layers deep. This is the difference between an
+// application you operate and an instrument you play: the whole kit, the
+// scale, the clips and the effects are all under your hands at once, and the
+// layer key shifts which of them without moving your hands.
+//
+// A cell says what one key does. The modes are deliberately few and each is a
+// thing you would say out loud - hit that drum, play that note, launch that
+// clip - rather than a general mechanism you have to configure.
+// ---------------------------------------------------------------------------
+
+enum class CellMode {
+    Empty,
+    Hit,        // fire a track's instrument once
+    Note,       // a pitched note in the song's key, held while the key is down
+    Chord,      // stacked thirds within the key
+    Pattern,    // launch a pattern on a track, or -1 to stop it
+    Scene,      // launch a whole scene
+    Record,     // arm recording on a track
+};
+
+inline const char* cellModeName(CellMode m) {
+    switch (m) {
+        case CellMode::Empty:   return "empty";
+        case CellMode::Hit:     return "hit";
+        case CellMode::Note:    return "note";
+        case CellMode::Chord:   return "chord";
+        case CellMode::Pattern: return "pattern";
+        case CellMode::Scene:   return "scene";
+        case CellMode::Record:  return "record";
+    }
+    return "empty";
+}
+
+/** Trigger fires once; gate sounds while held; toggle latches on and off. */
+enum class CellBehavior { Trigger, Gate, Toggle };
+
+/** When a launch takes effect. Anything but Off waits for the next boundary. */
+enum class Quantize { Off, Sixteenth, Eighth, Quarter, Half, Bar, TwoBar, FourBar };
+
+inline double quantizeBeats(Quantize q, int beatsPerBar) {
+    const double bar = double(std::max(1, beatsPerBar));
+    switch (q) {
+        case Quantize::Off:       return 0.0;
+        case Quantize::Sixteenth: return 0.25;
+        case Quantize::Eighth:    return 0.5;
+        case Quantize::Quarter:   return 1.0;
+        case Quantize::Half:      return 2.0;
+        case Quantize::Bar:       return bar;
+        case Quantize::TwoBar:    return bar * 2.0;
+        case Quantize::FourBar:   return bar * 4.0;
+    }
+    return 0.0;
+}
+
+inline const char* quantizeName(Quantize q) {
+    switch (q) {
+        case Quantize::Off:       return "off";
+        case Quantize::Sixteenth: return "1/16";
+        case Quantize::Eighth:    return "1/8";
+        case Quantize::Quarter:   return "1/4";
+        case Quantize::Half:      return "1/2";
+        case Quantize::Bar:       return "1 bar";
+        case Quantize::TwoBar:    return "2 bars";
+        case Quantize::FourBar:   return "4 bars";
+    }
+    return "off";
+}
+
+struct Cell {
+    CellMode mode = CellMode::Empty;
+    /** Which track this acts on, for every mode but Scene. */
+    int track = -1;
+    float velocity = 0.9f;
+    /** Note and Chord: degree of the song's scale, plus octaves on top. */
+    int degree = 0;
+    int octave = 0;
+    /** Chord: how many thirds are stacked. 3 is a triad, 4 a seventh. */
+    int chordSize = 3;
+    int inversion = 0;
+    /** Pattern: which one to launch. -1 stops the track. */
+    int patternIndex = 0;
+    int scene = -1;
+    Quantize quantize = Quantize::Off;
+    CellBehavior behavior = CellBehavior::Trigger;
+    /** What the key says on the interface. */
+    std::string label;
+};
+
+struct KeyMap {
+    static constexpr int kLayers = 4;
+    static constexpr int kCols = 10;
+    static constexpr int kRows = 4;
+    static constexpr int kCells = kCols * kRows;
+
+    /** kLayers * kCells, laid out layer-major. */
+    std::vector<Cell> cells = std::vector<Cell>(size_t(kLayers * kCells), Cell{});
+    std::vector<std::string> layerNames = { "DRUMS", "MELODY", "CLIPS", "FX" };
+
+    Cell* at(int layer, int index) {
+        if (layer < 0 || layer >= kLayers || index < 0 || index >= kCells) return nullptr;
+        return &cells[size_t(layer * kCells + index)];
+    }
+    const Cell* at(int layer, int index) const {
+        if (layer < 0 || layer >= kLayers || index < 0 || index >= kCells) return nullptr;
+        return &cells[size_t(layer * kCells + index)];
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Arranging
 //
 // A loop is a scene; a song is scenes placed one after another. The patterns
@@ -301,6 +412,7 @@ struct Song {
     /** Index of the track whose hits drive the sidechain. -1 for none. */
     int sidechainSource = 0;
 
+    KeyMap keymap;
     std::vector<Scene> scenes;
     std::vector<Section> arrangement;
     /** Play the arrangement rather than looping whatever is armed. */
@@ -361,6 +473,15 @@ void moveTrack(Song& song, int from, int to);
  * the part follows the key when it changes, drum tracks keep a semitone offset.
  */
 Pattern patternFromTake(const Take& take, const theory::Key& key, bool pitched);
+
+/**
+ * Lay the forty keys out over whatever tracks the song has.
+ *
+ * Rebuilt rather than stored per song so that adding a track puts it under
+ * your hands immediately - a mapping that goes stale the moment the kit
+ * changes is worse than no mapping.
+ */
+KeyMap makeDefaultKeyMap(const Song& song);
 
 /** A starter kit, so the app opens with something that already grooves. */
 Song makeDefaultSong();

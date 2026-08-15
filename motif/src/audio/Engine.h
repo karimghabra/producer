@@ -101,6 +101,22 @@ public:
      */
     void noteOn(int midiNote, float velocity, double atSec = -1.0);
     void noteOff(int midiNote, double atSec = -1.0);
+
+    // --- the performance layer ----------------------------------------------
+    /**
+     * Press one of the forty keys on a layer.
+     *
+     * Everything a key can do goes through here: hitting a drum, holding a
+     * note or a chord, launching a clip or a scene, arming a take. Anything
+     * quantised is queued and applied by the render loop at the next boundary,
+     * so a launch lands on the beat rather than where the finger did.
+     */
+    void pressCell(int layer, int index, float velocityScale = 1.0f);
+    void releaseCell(int layer, int index);
+    /** Let go of everything a key is holding, without stopping the transport. */
+    void releaseAllCells();
+    /** Cells waiting on a boundary, so the interface can show them pulsing. */
+    std::vector<int> pendingCells() const;
     void allNotesOff();
     /** Fire a track's instrument once, ignoring the sequencer. */
     void auditionTrack(int trackIndex, int midiNote, float velocity);
@@ -233,6 +249,29 @@ private:
     std::atomic<int> section_{ -1 };
     /** Pattern chosen by the current scene, per track. -1 means "as the song says". */
     std::array<int, kMaxTracks> scenePattern_{};
+
+    // --- the performance layer ----------------------------------------------
+    /** What a held key is sounding, so releasing it stops exactly that. */
+    struct HeldCell {
+        int layer = -1;
+        int index = -1;
+        std::vector<int> notes;      // midi notes this key started
+        bool latched = false;        // toggle behaviour: still on after release
+    };
+    std::vector<HeldCell> holding_;
+
+    /** A launch waiting for its boundary. */
+    struct PendingLaunch {
+        double atBeats = 0.0;
+        int layer = -1;
+        int index = -1;
+    };
+    std::vector<PendingLaunch> pending_;
+    mutable std::mutex performLock_;
+
+    /** Do what the cell says, now. Called from press or from the boundary. */
+    void applyCell(const Cell& cell, int layer, int index, float velocityScale);
+    void servicePendingLaunches();
     std::atomic<double> positionBeats_{ 0.0 };
     std::atomic<float> peak_{ 0.0f };
     std::atomic<float> reduction_{ 0.0f };

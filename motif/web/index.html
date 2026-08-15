@@ -108,9 +108,11 @@
     </section>
   </main>
 
+  <!-- Forty keys, four layers deep, always on screen. This is the difference
+       between an application you operate and an instrument you play. -->
   <footer>
     <div class="play-bar">
-      <button id="scale-lock" class="toggle" title="Map the keys to the scale, so nothing you play is out of key"><i></i><label>IN KEY</label></button>
+      <div id="layers" class="layers"></div>
       <button id="key-pick" class="keychip" title="Key and scale"><span id="key-name">A Minor</span></button>
       <div class="octave">
         <label>OCT</label>
@@ -119,9 +121,9 @@
         <button id="oct-up" title="X">+</button>
       </div>
       <div id="midi" class="midi"></div>
-      <div class="hint">SPACE play &nbsp;|&nbsp; R record &nbsp;|&nbsp; Z X octave</div>
+      <div class="hint">SPACE play &nbsp;|&nbsp; R record &nbsp;|&nbsp; F1&ndash;F4 layer &nbsp;|&nbsp; Z X octave</div>
     </div>
-    <div id="keys" class="keys"></div>
+    <div id="pads" class="pads"></div>
   </footer>
 </div>
 <script src="motif.js"></script>

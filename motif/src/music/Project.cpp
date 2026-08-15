@@ -368,6 +368,16 @@ bool songFromJson(const std::string& text, Song& out, std::string& error) {
     }
     if (song.sidechainSource >= trackCount) song.sidechainSource = -1;
 
+    // A project saved before the keys existed, or one whose mapping points at
+    // tracks it no longer has. An empty grid of pads is worse than a default
+    // one, so lay it out over whatever this song actually contains.
+    const bool anyMapped = std::any_of(song.keymap.cells.begin(), song.keymap.cells.end(),
+                                       [](const Cell& c) { return c.mode != CellMode::Empty; });
+    const bool pointsOutside = std::any_of(
+        song.keymap.cells.begin(), song.keymap.cells.end(),
+        [&](const Cell& c) { return c.track >= trackCount; });
+    if (!anyMapped || pointsOutside) song.keymap = makeDefaultKeyMap(song);
+
     // Exactly one armed track, whatever the file says.
     int armed = -1;
     for (size_t i = 0; i < song.tracks.size(); ++i)

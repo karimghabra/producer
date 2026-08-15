@@ -300,6 +300,220 @@ int Engine::trackStep(int trackIndex) const {
     return stepDisplay_[size_t(trackIndex)].load(std::memory_order_relaxed);
 }
 
+// ---------------------------------------------------------------------------
+// The performance layer
+// ---------------------------------------------------------------------------
+
+void Engine::pressCell(int layer, int index, float velocityScale) {
+    Cell cell;
+    Quantize quantize = Quantize::Off;
+    int beatsPerBar = 4;
+    {
+        std::lock_guard<std::mutex> lock(songLock_);
+        const Cell* found = song_.keymap.at(layer, index);
+        if (!found || found->mode == CellMode::Empty) return;
+        cell = *found;
+        quantize = found->quantize;
+        beatsPerBar = song_.beatsPerBar;
+    }
+
+    // Toggling something that is already latched is how you turn it off.
+    {
+        std::lock_guard<std::mutex> lock(performLock_);
+        for (auto it = holding_.begin(); it != holding_.end(); ++it) {
+            if (it->layer == layer && it->index == index && it->latched) {
+                for (int n : it->notes) noteOff(n);
+                holding_.erase(it);
+                if (cell.mode == CellMode::Record) armRecording();
+                return;
+            }
+        }
+    }
+
+    const double grid = quantizeBeats(quantize, beatsPerBar);
+    if (grid > 0.0 && playing_.load(std::memory_order_relaxed)) {
+        // Queued rather than applied: the point of quantising a launch is that
+        // it lands where the music is, not where the hand was.
+        std::lock_guard<std::mutex> lock(performLock_);
+        const double now = positionBeatsLocal_;
+        const double at = std::ceil((now + 1e-6) / grid) * grid;
+        pending_.push_back({ at, layer, index });
+        return;
+    }
+    applyCell(cell, layer, index, velocityScale);
+}
+
+void Engine::applyCell(const Cell& cell, int layer, int index, float velocityScale) {
+    const float velocity = std::clamp(cell.velocity * velocityScale, 0.0f, 1.3f);
+
+    HeldCell holding;
+    holding.layer = layer;
+    holding.index = index;
+    holding.latched = cell.behavior == CellBehavior::Toggle;
+
+    switch (cell.mode) {
+        case CellMode::Empty: return;
+
+        case CellMode::Hit: {
+            // One shot on that track's own instrument, whatever is armed.
+            Song snapshot = song();
+            if (cell.track < 0 || cell.track >= int(snapshot.tracks.size())) return;
+            const Track& t = snapshot.tracks[size_t(cell.track)];
+            const int midi = theory::degreeToMidi(snapshot.key, cell.degree, cell.octave);
+            if (t.instrument.isDrum) {
+                const int semis = midi - theory::degreeToMidi(snapshot.key, 0, 0);
+                allocateDrumVoice(cell.track)->trigger(t.instrument.drumEngine,
+                                                       t.instrument.drum, velocity, float(semis));
+            } else {
+                SynthSlot* slot = allocateSynthVoice(cell.track);
+                slot->voice.start(midi, velocity, t.instrument.synth);
+                slot->releaseAt = positionBeatsLocal_ + 0.25;    // a hit, not a hold
+            }
+            // A hit is playing too, and a beat tapped in on the pads should
+            // record exactly like one played on the keys.
+            if (recording_.load(std::memory_order_relaxed)) {
+                std::lock_guard<std::mutex> capture(captureLock_);
+                const double t0 = double(sampleClock_ - recordStartSample_) / sampleRate_;
+                captured_.push_back({ t0, t0 + 0.12, midi, velocity });
+            }
+            return;                                             // nothing to hold
+        }
+
+        case CellMode::Note:
+        case CellMode::Chord: {
+            Song snapshot = song();
+            if (cell.track < 0 || cell.track >= int(snapshot.tracks.size())) return;
+            const Track& t = snapshot.tracks[size_t(cell.track)];
+
+            std::vector<int> notes;
+            if (cell.mode == CellMode::Note) {
+                notes.push_back(theory::degreeToMidi(snapshot.key, cell.degree, cell.octave));
+            } else {
+                notes = theory::buildChord(snapshot.key, cell.degree,
+                                           std::clamp(cell.chordSize, 2, 6),
+                                           cell.inversion, cell.octave);
+            }
+            for (int n : notes) {
+                if (t.instrument.isDrum) {
+                    const int semis = n - theory::degreeToMidi(snapshot.key, 0, 0);
+                    allocateDrumVoice(cell.track)->trigger(t.instrument.drumEngine,
+                                                           t.instrument.drum, velocity, float(semis));
+                } else {
+                    SynthSlot* slot = allocateSynthVoice(cell.track);
+                    slot->voice.start(n, velocity, t.instrument.synth);
+                    slot->releaseAt = -1.0;                     // held until let go
+                }
+                // Captured like any other playing, so a take recorded from the
+                // pads fits the same way one played on the keyboard does.
+                if (recording_.load(std::memory_order_relaxed)) {
+                    std::lock_guard<std::mutex> capture(captureLock_);
+                    held_.push_back({ double(sampleClock_ - recordStartSample_) / sampleRate_,
+                                      n, velocity });
+                }
+            }
+            holding.notes = std::move(notes);
+            break;
+        }
+
+        case CellMode::Pattern: {
+            editSong([&](Song& s) {
+                if (cell.track < 0 || cell.track >= int(s.tracks.size())) return;
+                Track& t = s.tracks[size_t(cell.track)];
+                if (cell.patternIndex < 0) {
+                    t.seqEnabled = false;                       // stop this track
+                } else if (cell.patternIndex < int(t.patterns.size())) {
+                    t.activePattern = cell.patternIndex;
+                    t.seqEnabled = true;
+                }
+            });
+            break;
+        }
+
+        case CellMode::Scene: {
+            editSong([&](Song& s) {
+                if (cell.scene < 0 || cell.scene >= int(s.scenes.size())) return;
+                const Scene& sc = s.scenes[size_t(cell.scene)];
+                for (size_t i = 0; i < s.tracks.size(); ++i) {
+                    const int p = sc.patternFor(i);
+                    s.tracks[i].seqEnabled = p >= 0;
+                    if (p >= 0 && p < int(s.tracks[i].patterns.size()))
+                        s.tracks[i].activePattern = p;
+                }
+            });
+            break;
+        }
+
+        case CellMode::Record: {
+            editSong([&](Song& s) {
+                for (size_t i = 0; i < s.tracks.size(); ++i)
+                    s.tracks[i].armed = (int(i) == cell.track);
+            });
+            armRecording();
+            break;
+        }
+    }
+
+    if (!holding.notes.empty() || holding.latched) {
+        std::lock_guard<std::mutex> lock(performLock_);
+        holding_.push_back(std::move(holding));
+    }
+}
+
+void Engine::releaseCell(int layer, int index) {
+    std::vector<int> toRelease;
+    {
+        std::lock_guard<std::mutex> lock(performLock_);
+        for (auto it = holding_.begin(); it != holding_.end();) {
+            if (it->layer == layer && it->index == index && !it->latched) {
+                toRelease.insert(toRelease.end(), it->notes.begin(), it->notes.end());
+                it = holding_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (int n : toRelease) noteOff(n);
+}
+
+void Engine::releaseAllCells() {
+    {
+        std::lock_guard<std::mutex> lock(performLock_);
+        holding_.clear();
+        pending_.clear();
+    }
+    allNotesOff();
+}
+
+std::vector<int> Engine::pendingCells() const {
+    std::lock_guard<std::mutex> lock(performLock_);
+    std::vector<int> out;
+    out.reserve(pending_.size() * 2);
+    for (const auto& p : pending_) { out.push_back(p.layer); out.push_back(p.index); }
+    return out;
+}
+
+void Engine::servicePendingLaunches() {
+    std::vector<PendingLaunch> due;
+    {
+        std::lock_guard<std::mutex> lock(performLock_);
+        if (pending_.empty()) return;
+        for (auto it = pending_.begin(); it != pending_.end();) {
+            if (positionBeatsLocal_ >= it->atBeats) { due.push_back(*it); it = pending_.erase(it); }
+            else ++it;
+        }
+    }
+    for (const auto& p : due) {
+        Cell cell;
+        {
+            std::lock_guard<std::mutex> lock(songLock_);
+            const Cell* found = song_.keymap.at(p.layer, p.index);
+            if (!found) continue;
+            cell = *found;
+        }
+        applyCell(cell, p.layer, p.index, 1.0f);
+    }
+}
+
 void Engine::rewindSong() {
     songBar_.store(0.0, std::memory_order_relaxed);
     section_.store(-1, std::memory_order_relaxed);
@@ -438,6 +652,12 @@ void Engine::fireStep(int trackIndex, const Track& track, const Pattern& pattern
 void Engine::render(float* left, float* right, int numSamples) {
     std::fill(left, left + numSamples, 0.0f);
     std::fill(right, right + numSamples, 0.0f);
+
+    // Before the song lock, not inside it: applying a launch edits the song and
+    // would deadlock against a lock this thread already held. Block granularity
+    // is a few milliseconds, which is far finer than the boundary being waited
+    // for anyway.
+    servicePendingLaunches();
 
     std::unique_lock<std::mutex> lock(songLock_, std::try_to_lock);
     if (!lock.owns_lock()) return;      // a block of silence beats a glitch

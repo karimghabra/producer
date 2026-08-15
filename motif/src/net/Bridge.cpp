@@ -141,6 +141,12 @@ std::string Bridge::stateJson() const {
       << ",\"cycle\":" << song.polymeterCycle()
       << ",\"sidechainSource\":" << song.sidechainSource
       << ",\"name\":\"" << esc(song.name) << "\""
+      << ",\"pending\":[";
+    {
+        const auto waiting = engine_.pendingCells();
+        for (size_t i = 0; i < waiting.size(); ++i) { if (i) j << ','; j << waiting[i]; }
+    }
+    j << "]"
       << ",\"midi\":[";
     {
         std::lock_guard<std::mutex> lock(midiMutex_);
@@ -527,6 +533,23 @@ bool Bridge::applyCommand(const std::string& body, std::string& error) {
         return true;
     }
     if (type == "allNotesOff") { engine_.allNotesOff(); return true; }
+
+    // --- the performance layer ---------------------------------------------
+
+    if (type == "cellDown") {
+        engine_.pressCell(intField(body, "layer", 0), intField(body, "cell", -1),
+                          float(numField(body, "velocity", 1.0)));
+        return true;
+    }
+    if (type == "cellUp") {
+        engine_.releaseCell(intField(body, "layer", 0), intField(body, "cell", -1));
+        return true;
+    }
+    if (type == "cellsOff") { engine_.releaseAllCells(); return true; }
+    if (type == "remapKeys") {
+        engine_.editSong([](Song& s) { s.keymap = makeDefaultKeyMap(s); });
+        return true;
+    }
 
     if (type == "selectTrack") {
         engine_.editSong([&](Song& s) {
@@ -1378,6 +1401,37 @@ int Bridge::start(const std::string& webRoot, int preferredPort) {
               << ",\"help\":\"" << esc(t.help) << "\"}";
         }
         j << ']';
+        res.set_content(j.str(), "application/json");
+    });
+
+    // The forty keys, four layers deep. Static enough to fetch on demand rather
+    // than ride along with the twenty-a-second state.
+    server_->Get("/api/keymap", [this](const httplib::Request&, httplib::Response& res) {
+        const Song song = engine_.song();
+        std::ostringstream j;
+        j << "{\"layers\":[";
+        for (int l = 0; l < KeyMap::kLayers; ++l) {
+            if (l) j << ',';
+            j << "{\"name\":\"" << esc(l < int(song.keymap.layerNames.size())
+                                        ? song.keymap.layerNames[size_t(l)] : "")
+              << "\",\"cells\":[";
+            for (int c = 0; c < KeyMap::kCells; ++c) {
+                const Cell* cell = song.keymap.at(l, c);
+                if (c) j << ',';
+                if (!cell) { j << "{\"mode\":\"empty\"}"; continue; }
+                j << "{\"mode\":\"" << cellModeName(cell->mode) << "\""
+                  << ",\"label\":\"" << esc(cell->label) << "\""
+                  << ",\"track\":" << cell->track
+                  << ",\"colour\":" << (cell->track >= 0 && cell->track < int(song.tracks.size())
+                                        ? song.tracks[size_t(cell->track)].colour : 0u)
+                  << ",\"quantize\":\"" << quantizeName(cell->quantize) << "\""
+                  << ",\"gate\":" << (cell->behavior == CellBehavior::Gate ? "true" : "false")
+                  << ",\"toggle\":" << (cell->behavior == CellBehavior::Toggle ? "true" : "false")
+                  << "}";
+            }
+            j << "]}";
+        }
+        j << "]}";
         res.set_content(j.str(), "application/json");
     });
 

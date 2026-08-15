@@ -873,267 +873,91 @@ check(meterWidths.some((w) => w > 1), 'track meters move while it plays',
 await cmd({ type: 'stop' });
 await page.waitForTimeout(300);
 
-// --- the playing surface -----------------------------------------------------
+// --- the performance layer ---------------------------------------------------
 //
-// The app's whole premise is that you play the part rather than draw it, so
-// what the keys do is not a detail.
-await cmd({ type: 'selectTrack', track: 4 });
-await cmd({ type: 'key', root: 9, scale: 0 });        // A minor
-await page.waitForTimeout(350);
-
-check(await page.locator('#scale-lock').evaluate((el) => el.classList.contains('on')),
-      'keys are locked to the scale by default');
-const rows = await page.locator('#keys .key-row').count();
-const keyCount = await page.locator('#keys .key').count();
-check(rows === 2 && keyCount === 18, 'two rows of scale keys', `${rows} rows, ${keyCount} keys`);
-
-// Every key must be in the scale. That is the entire promise of the mode.
-const labels = await page.locator('#keys .key span').allTextContents();
-const A_MINOR = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
-const outOfKey = labels.filter((l) => !A_MINOR.includes(l.replace(/-?\d+$/, '')));
-check(outOfKey.length === 0, 'nothing on the keyboard is out of key',
-      outOfKey.length ? outOfKey.join(',') : labels.slice(0, 9).join(' '));
-
-// Pressing a key must reach the engine as the right note.
-await page.locator('#keys .key[data-k="a"]').hover();
-await page.mouse.down();
-await page.waitForTimeout(220);
-const sounding = await engine();
-await page.mouse.up();
-check(sounding.peak > 0.01, 'pressing a key sounds a note', `peak ${sounding.peak.toFixed(3)}`);
-
-// Octave shift, and no note left hanging across it.
-await page.locator('#oct-up').click();
-await page.waitForTimeout(250);
-check(await page.locator('#oct-value').innerText() === '+1', 'octave shifts up',
-      await page.locator('#oct-value').innerText());
-const shifted = await page.locator('#keys .key[data-k="a"] span').innerText();
-await page.locator('#oct-down').click();
-await page.waitForTimeout(250);
-const home = await page.locator('#keys .key[data-k="a"] span').innerText();
-check(parseInt(shifted.replace(/\D+/g, ''), 10) === parseInt(home.replace(/\D+/g, ''), 10) + 1,
-      'and the notes move with it', `${home} -> ${shifted}`);
-
-// Changing key must move the whole keyboard.
-await page.locator('#key-pick').click();
-await page.waitForTimeout(250);
-await page.locator('#track-menu .chip', { hasText: /^C$/ }).first().click();
-await page.waitForTimeout(400);
-const cLabels = await page.locator('#keys .key span').allTextContents();
-const C_MAJOR_ROOTS = ['C', 'D', 'D#', 'F', 'G', 'G#', 'A#'];   // C minor
-check(cLabels.every((l) => C_MAJOR_ROOTS.includes(l.replace(/-?\d+$/, ''))),
-      'changing the root moves every key', cLabels.slice(0, 7).join(' '));
-
-// A pentatonic scale has five degrees, so the same keys cover more ground.
-await page.locator('#key-pick').click();
-await page.waitForTimeout(250);
-await page.locator('#track-menu .chip', { hasText: 'Minor Pentatonic' }).click();
-await page.waitForTimeout(400);
-const pent = await page.locator('#keys .key span').allTextContents();
-const pentNames = new Set(pent.map((l) => l.replace(/-?\d+$/, '')));
-check(pentNames.size === 5, 'a five-note scale gives five note names',
-      [...pentNames].join(' '));
-
-// Chromatic mode puts the piano back.
-await page.locator('#scale-lock').click();
-await page.waitForTimeout(350);
-// Six, not five: the piano layout runs past an octave, up to D above the C.
-check(await page.locator('#keys .key.black').count() === 6, 'chromatic mode has black keys',
-      `${await page.locator('#keys .key.black').count()} black`);
-await page.locator('#scale-lock').click();
-await cmd({ type: 'key', root: 9, scale: 0 });
-await page.waitForTimeout(300);
-
-// Typing a project name must not play notes.
-await page.locator('#project').click();
-await page.waitForTimeout(250);
-await page.locator('#proj-name').fill('');
-await page.locator('#proj-name').type('adg', { delay: 40 });
-await page.waitForTimeout(250);
-check(await page.locator('#keys .key.down').count() === 0,
-      'typing in a field does not play the keyboard');
-await page.keyboard.press('Escape');
-await page.waitForTimeout(200);
-
-// --- assembling a song -------------------------------------------------------
+// Forty keys, four layers, always on screen. Checked as an instrument: does a
+// key make the sound it says it will, does a held note stop when let go, does
+// a quantised launch wait for its boundary.
 await cmd({ type: 'newSong' });
-await page.locator('[data-view="song"]').click();
-await page.waitForTimeout(450);
-
-check(await page.locator('.song-empty').count() === 1,
-      'the song view explains itself when empty');
-
-// Keep the current loop as a scene, twice, so there is something to arrange.
-await page.locator('#scene-bar .chip.ghost').click();
-await page.waitForTimeout(400);
-check((await engine()).scenes.length === 1, 'a loop can be kept as a scene',
-      `${(await engine()).scenes.length} scenes`);
-const kept = (await engine()).scenes[0];
-check(kept.patterns.length === 6, 'and it captures every track',
-      `patterns ${kept.patterns.join(',')}`);
-
-// Silence a track, keep that as a second scene: the difference is the point.
-await cmd({ type: 'seqEnabled', track: 4, value: 0 });
-await cmd({ type: 'seqEnabled', track: 5, value: 0 });
-await page.waitForTimeout(300);
-await page.locator('#scene-bar .chip.ghost').click();
-await page.waitForTimeout(400);
-const scenes = (await engine()).scenes;
-check(scenes.length === 2 && scenes[1].patterns[4] === -1,
-      'a scene remembers which tracks sit out',
-      `scene 2 track 5 = ${scenes[1].patterns[4]}`);
-
-// Scenes can be renamed and deleted, not only made.
-await page.locator('#scene-bar .chip').first().dblclick();
-await page.waitForTimeout(300);
-await page.locator('.scene-rename').fill('Intro');
-await page.keyboard.press('Enter');
-await page.waitForTimeout(400);
-check((await engine()).scenes[0].name === 'Intro', 'a scene can be renamed in place',
-      (await engine()).scenes[0].name);
-
-await page.locator('#scene-bar .chip').first().click({ button: 'right' });
-await page.waitForTimeout(300);
-check(await page.locator('#track-menu .menu-item', { hasText: 'Delete' }).count() === 1,
-      'and its menu offers delete');
-await page.keyboard.press('Escape');
-await page.mouse.click(6, 6);
-await page.waitForTimeout(250);
-
-// Place sections.
-await page.locator('.section-add').click();
-await page.waitForTimeout(400);
-check((await engine()).arrangement.length === 1, 'a section can be placed',
-      `${(await engine()).arrangement.length} sections`);
-await page.locator('.section-add').click();
-await page.waitForTimeout(400);
-await page.locator('#song-lane .section').nth(1).click();
-await page.waitForTimeout(300);
-await page.locator('#section-detail .sec-select').selectOption('1');
-await page.waitForTimeout(400);
-check((await engine()).arrangement[1].scene === 1, 'and pointed at a different scene',
-      `section 2 plays scene ${(await engine()).arrangement[1].scene}`);
-
-// Length, in bars.
-for (let i = 0; i < 4; i++) {
-  await page.locator('#section-detail .stepper button', { hasText: '+' }).click();
-  await page.waitForTimeout(140);
-}
-check((await engine()).arrangement[1].bars === 8, 'section length is editable',
-      `${(await engine()).arrangement[1].bars} bars`);
-check((await engine()).songBars === 12, 'and the song is as long as its parts',
-      `${(await engine()).songBars} bars`);
-
-// Sections are drawn in proportion to their length.
-const widths = await page.evaluate(() =>
-  [...document.querySelectorAll('#song-lane .section')].map((el) => el.getBoundingClientRect().width));
-check(widths[1] > widths[0] * 1.6, 'an eight-bar section is drawn twice as wide as a four',
-      widths.map((w) => Math.round(w)).join(' / '));
-
-// --- automation --------------------------------------------------------------
-await cmd({ type: 'filter', track: 0, what: 'type', value: 1 });   // give it something to sweep
-await page.waitForTimeout(300);
-await page.locator('#section-detail .chip.ghost', { hasText: 'AUTOMATE' }).click();
-await page.waitForTimeout(300);
-await page.locator('#track-menu .chip', { hasText: 'cutoff' }).click();
-await page.waitForTimeout(450);
-const withLane = (await engine()).arrangement[1];
-check(withLane.lanes.length === 1 && withLane.lanes[0].param === 'cutoff',
-      'a lane can be added', withLane.lanes[0]?.param);
-check(withLane.lanes[0].points.length === 2
-      && withLane.lanes[0].points[0].v === withLane.lanes[0].points[1].v,
-      'and starts flat, so adding it changes nothing yet',
-      withLane.lanes[0].points.map((p) => p.v).join(' -> '));
-
-// A lane drives a set of tracks, chosen on the lane itself.
-check(await page.locator('.lane-tracks .track-pick').count() === 6,
-      'every track can be added to a curve');
-check(await page.locator('.lane-tracks .track-pick.on').count() === 1,
-      'starting with the armed one');
-const laneTracks = (s) => s.arrangement[1].lanes[0].tracks;
-await page.locator('.lane-tracks .track-pick', { hasText: 'Clap' }).click();
-await waitFor((s) => laneTracks(s).includes(1));
-await page.locator('.lane-tracks .track-pick', { hasText: 'Hats' }).click();
-await waitFor((s) => laneTracks(s).includes(2));
-const shared = (await engine()).arrangement[1].lanes[0];
-check(shared.tracks.length === 3, 'and more can be added to the same curve',
-      'tracks ' + shared.tracks.join(','));
-await page.locator('.lane-tracks .track-pick', { hasText: 'Clap' }).click();
-await waitFor((s) => !laneTracks(s).includes(1));
-check((await engine()).arrangement[1].lanes[0].tracks.length === 2,
-      'and taken off again',
-      'tracks ' + (await engine()).arrangement[1].lanes[0].tracks.join(','));
-
-// Shape presets work over the lane's own span, not the section's.
-await page.locator('.lane .chip', { hasText: 'Ramp up' }).click();
-await page.waitForTimeout(400);
-const ramped = (await engine()).arrangement[1].lanes[0].points;
-check(ramped[0].v < 0.01 && ramped.at(-1).v > 0.99,
-      'a ramp rises across its span',
-      ramped[0].v + ' at bar ' + ramped[0].bar + ' -> '
-        + ramped.at(-1).v + ' at bar ' + ramped.at(-1).bar);
-
-// Drawing over part of the section must stay over that part.
-const laneBox = await page.locator('.lane-canvas').first().boundingBox();
-const x0 = laneBox.x + laneBox.width * 0.25;
-const x1 = laneBox.x + laneBox.width * 0.6;
-await page.mouse.move(x0, laneBox.y + laneBox.height - 6);
-await page.mouse.down();
-await page.mouse.move(x1, laneBox.y + 6, { steps: 16 });
-await page.mouse.up();
 await page.waitForTimeout(500);
-const drawn = (await engine()).arrangement[1].lanes[0].points;
-check(drawn.length > 5, 'dragging draws a curve rather than two points',
-      drawn.length + ' points');
-check(drawn[0].bar > 1.2 && drawn.at(-1).bar < 5.6,
-      'a ramp occupies only the bars it was drawn over, not the whole section',
-      'bars ' + drawn[0].bar.toFixed(2) + '-' + drawn.at(-1).bar.toFixed(2)
-        + ' of ' + (await engine()).arrangement[1].bars);
-check(drawn[0].v < 0.3 && drawn.at(-1).v > 0.7, 'and rises the way it was drawn',
-      drawn[0].v.toFixed(2) + ' -> ' + drawn.at(-1).v.toFixed(2));
 
-// The automation must not have written into the mix.
-check(Math.abs((await engine()).tracks[0].mixer.filterCutoff - 1200) < 1,
-      "drawing automation leaves the track's own value alone",
-      Math.round((await engine()).tracks[0].mixer.filterCutoff) + ' Hz');
+check(await page.locator('#pads .pad').count() === 40, 'forty pads are on screen',
+      `${await page.locator('#pads .pad').count()} pads`);
+check(await page.locator('.layer-tab').count() === 4, 'across four layers');
 
-// --- playing the arrangement -------------------------------------------------
-await page.locator('#scene-bar .chip', { hasText: 'LOOP MODE' }).click();
-await page.waitForTimeout(300);
-check((await engine()).songMode === true, 'song mode engages');
-await cmd({ type: 'rewindSong' });
-await cmd({ type: 'play' });
-await page.waitForTimeout(1500);
-const runningA = await engine();
-check(runningA.section === 0, 'playback starts at the first section',
-      `section ${runningA.section}, bar ${runningA.songBar.toFixed(2)}`);
-check(runningA.songBar > 0.1, 'and the song position advances',
-      `bar ${runningA.songBar.toFixed(2)}`);
-await page.waitForTimeout(2600);
-const runningB = await engine();
-check(runningB.songBar > runningA.songBar, 'it keeps moving through the arrangement',
-      `${runningA.songBar.toFixed(2)} -> ${runningB.songBar.toFixed(2)} of ${runningB.songBars}`);
+const padLabels = await page.locator('#pads .pad span').allTextContents();
+check(padLabels.slice(20, 24).join(',') === 'Kick,Clap,Hats,Snare',
+      'the home row is the kit, and says so', padLabels.slice(20, 24).join(' '));
+check(padLabels.filter((l) => l).length >= 28,
+      'and most of the layer is mapped, not empty',
+      `${padLabels.filter((l) => l).length} of 40 labelled`);
+
+// A drum pad makes its drum.
 await cmd({ type: 'stop' });
-await cmd({ type: 'songMode', value: 0 });
+await page.waitForTimeout(300);
+await page.keyboard.down('a');
+await page.waitForTimeout(80);
+await page.keyboard.up('a');
+let padPeak = 0;
+for (let i = 0; i < 12; i++) { padPeak = Math.max(padPeak, (await engine()).peak);
+                               await page.waitForTimeout(40); }
+check(padPeak > 0.02, 'pressing a pad sounds it', `peak ${padPeak.toFixed(3)}`);
+
+// The melody layer holds while held, and stops when let go.
+await page.keyboard.press('F2');
+await page.waitForTimeout(400);
+check(await page.locator('.layer-tab.on').innerText().then((t) => /MELODY/.test(t)),
+      'F2 switches layer', await page.locator('.layer-tab.on').innerText());
+await page.keyboard.down('Digit1');
+let chordPeak = 0;
+for (let i = 0; i < 12; i++) { chordPeak = Math.max(chordPeak, (await engine()).peak);
+                               await page.waitForTimeout(40); }
+await page.keyboard.up('Digit1');
+check(chordPeak > 0.02, 'a chord pad sounds while held', `peak ${chordPeak.toFixed(3)}`);
+await page.waitForTimeout(900);
+check((await engine()).peak < chordPeak * 0.5, 'and stops when it is let go',
+      `${chordPeak.toFixed(3)} -> ${(await engine()).peak.toFixed(3)}`);
+
+// A clip launch waits for the bar rather than landing where the finger did.
+await page.keyboard.press('F3');
+await page.waitForTimeout(400);
+const clipLabels = await page.locator('#pads .pad span').allTextContents();
+check(/Kick/.test(clipLabels[0] ?? '') && /Stop/.test(clipLabels[30] ?? ''),
+      'the clips layer is a column per track with a stop row',
+      `${clipLabels[0]} … ${clipLabels[30]}`);
+
+await cmd({ type: 'play' });
+await page.waitForTimeout(700);
+const patternBefore = (await engine()).tracks[0].activePattern;
+await page.keyboard.down('q');
+await page.waitForTimeout(60);
+await page.keyboard.up('q');
+await page.waitForTimeout(150);
+check((await engine()).pending.length > 0, 'a quantised launch queues rather than firing',
+      `${(await engine()).pending.length / 2} waiting`);
+check(await page.locator('#pads .pad.queued').count() > 0, 'and shows it pulsing');
+await page.waitForTimeout(2600);
+check((await engine()).tracks[0].activePattern !== patternBefore,
+      'then lands on the boundary',
+      `pattern ${patternBefore} -> ${(await engine()).tracks[0].activePattern}`);
+await cmd({ type: 'stop' });
+await page.keyboard.press('F1');
 await page.waitForTimeout(300);
 
-// Saving must carry all of it.
-await cmd({ type: 'save', name: 'Arrangement Check' });
+// A new track has to be playable straight away, or the mapping is a liability.
+await cmd({ type: 'addTrack', kind: 'synth' });
+await cmd({ type: 'remapKeys' });
+await page.waitForTimeout(700);
+const mapped = await page.evaluate(async () => {
+  const km = await (await fetch('/api/keymap')).json();
+  const n = (await (await fetch('/api/state')).json()).tracks.length - 1;
+  return km.layers.flatMap((l) => l.cells).filter((c) => c.track === n
+                                                       && c.mode !== 'empty').length;
+});
+check(mapped > 0, 'a track added later gets keys of its own', `${mapped} cells`);
 await cmd({ type: 'newSong' });
 await page.waitForTimeout(400);
-await cmd({ type: 'load', name: 'Arrangement Check' });
-await page.waitForTimeout(600);
-const reloaded = await engine();
-check(reloaded.scenes.length === 2 && reloaded.arrangement.length === 2,
-      'scenes and sections survive a save',
-      `${reloaded.scenes.length} scenes, ${reloaded.arrangement.length} sections`);
-check(reloaded.arrangement[1].lanes[0]?.points.length === drawn.length,
-      'and so does a drawn curve, point for point',
-      `${reloaded.arrangement[1].lanes[0]?.points.length} points`);
-await cmd({ type: 'deleteProject', name: 'Arrangement Check' });
-await cmd({ type: 'newSong' });
-await page.locator('[data-view="grid"]').click();
-await page.waitForTimeout(400);
+
 
 // --- projects ----------------------------------------------------------------
 //

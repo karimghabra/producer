@@ -528,26 +528,45 @@ footer { padding:9px 14px 11px; display:flex; flex-direction:column; gap:9px; }
 .midi.on { color:var(--fitted); }
 .midi.on::before { content:"MIDI "; color:var(--dimmer); }
 
-.keys { display:flex; flex-direction:column; gap:4px; }
-.key-row { display:flex; gap:4px; }
-.key { flex:1; height:46px; border-radius:6px; background:var(--ink2);
-       border:1px solid var(--line); position:relative;
-       display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; }
-.key b { font:700 10px var(--sans); color:var(--dim); }
-.key span { font:9px var(--mono); color:var(--dimmer); }
-.key.black { background:var(--ink0); flex:.62; }
-/* The tonic, marked clearly: it is where the scale starts, and knowing which
-   keys are home is most of what makes an unfamiliar layout playable. */
-.key.tonic { border-color:#38455e; background:linear-gradient(180deg,var(--ink3),var(--ink2)); }
-.key.tonic b { color:var(--text); }
-.key.tonic span { color:var(--c); font-weight:600; }
-.key.tonic::before { content:""; position:absolute; top:5px; left:50%; translate:-50% 0;
-                     width:4px; height:4px; border-radius:50%; background:var(--c); opacity:.85; }
-.key:hover { border-color:#3d4b68; }
-.key.down { background:var(--c); border-color:var(--c);
-            box-shadow:0 0 0 1px var(--c),0 0 18px -4px var(--c); transform:translateY(-2px); }
-.key.down b, .key.down span { color:#06121a; }
-/* Two rows means half the height each, or the keyboard eats the window. */
-.keys.two-row .key { height:38px; }
+/* ---------- pads ---------- */
+.layers { display:flex; gap:3px; background:var(--ink1); padding:3px; border-radius:var(--r); }
+.layer-tab { display:flex; align-items:baseline; gap:5px; padding:5px 11px; border-radius:6px;
+             font:700 9.5px var(--sans); letter-spacing:.08em; color:var(--dimmer); }
+.layer-tab b { font:700 8px var(--mono); color:#39415a; }
+.layer-tab:hover { color:var(--dim); }
+.layer-tab.on { background:var(--ink3); color:var(--fitted); }
+.layer-tab.on b { color:var(--fitted); }
+
+.pads { display:flex; flex-direction:column; gap:3px; }
+.pad-row { display:flex; gap:3px; }
+.pad { flex:1; min-width:0; height:42px; border-radius:6px; position:relative;
+       background:var(--ink2); border:1px solid var(--line);
+       display:flex; flex-direction:column; align-items:flex-start; justify-content:space-between;
+       padding:4px 6px 5px; overflow:hidden; transition:.07s; --c:#5ee6c5; }
+.pad b { font:700 9px var(--mono); color:#39415a; }
+.pad span { font:9.5px var(--sans); color:var(--dim); white-space:nowrap;
+            overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+.pad:hover { border-color:#3d4b68; }
+.pad.down { background:var(--c); border-color:var(--c);
+            box-shadow:0 0 0 1px var(--c),0 0 18px -6px var(--c); transform:translateY(-1px); }
+.pad.down b, .pad.down span { color:rgba(0,0,0,.72); }
+
+/* A pad's left edge says what kind of thing it is, so the four layers read
+   differently at a glance rather than as four grids of identical boxes. */
+.pad.hit     { border-left:2px solid var(--c); }
+.pad.note    { border-left:2px solid color-mix(in srgb, var(--c) 70%, transparent); }
+.pad.chord   { border-left:2px solid var(--violet); }
+.pad.pattern { border-left:2px solid var(--c); background:rgba(22,28,41,.75); }
+.pad.scene   { border-left:2px solid var(--gold); background:rgba(22,28,41,.75); }
+.pad.record  { border-left:2px solid var(--hot); }
+.pad.empty   { background:rgba(14,18,27,.45); border-color:var(--line-soft); }
+.pad.empty b { color:#232b3d; }
+
+.pad-q { position:absolute; top:3px; right:5px; font:600 7.5px var(--mono);
+         color:#39415a; font-style:normal; }
+/* Waiting for its boundary. The pulse is the point: you pressed it, and it is
+   going to happen, just not yet. */
+.pad.queued { border-color:var(--gold); animation:pulse .9s infinite; }
+.pad.queued .pad-q { color:var(--gold); }
 .hint { font-size:10px; color:var(--dimmer); white-space:nowrap; margin-left:auto; }
 .choice-row.pad { padding:0 9px 6px; }
