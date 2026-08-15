@@ -165,9 +165,10 @@ section { padding:14px; overflow:auto; min-width:0; }
 
 .grid-ruler { display:grid; grid-template-columns:150px 1fr; gap:8px; margin-bottom:7px; }
 .gr-marks { display:grid; gap:4px; }
-.gr-marks span { font:600 9px var(--mono); color:var(--dimmer); text-align:left;
-                 padding-left:2px; }
-.gr-marks span.beat { color:var(--dim); }
+.gr-marks span { font:600 9px var(--mono); color:#39415a; text-align:left;
+                 padding-left:3px; }
+.gr-marks span.beat { color:var(--dimmer); }
+.gr-marks span.bar { color:var(--text); }
 
 .grid-rows { display:flex; flex-direction:column; gap:5px; align-content:start;
              overflow-y:auto; min-height:0; }
@@ -217,6 +218,9 @@ section { padding:14px; overflow:auto; min-width:0; }
 .gcell .note { position:absolute; left:0; right:0; bottom:2px; text-align:center;
                font:700 8.5px var(--mono); color:rgba(0,0,0,.6); pointer-events:none; }
 .gcell.wrap { border-left:1px solid #3a4761; }
+/* Beat and bar lines, so rows at different rates read against the same pulse. */
+.gcell.beat { box-shadow:inset 1px 0 0 rgba(255,255,255,.06); }
+.gcell.bar { box-shadow:inset 2px 0 0 rgba(255,255,255,.16); }
 .gcell:hover { border-color:#4a5a78; }
 .gcell.here { box-shadow:inset 0 0 0 2px var(--gold); }
 

@@ -199,6 +199,12 @@ const dismiss = async () => {
 
 console.log(`\nMotif stress  ·  seed ${SEED}  ·  ${STEPS} steps\n${'='.repeat(52)}\n`);
 
+// Anything saved during the run is the fuzzer's, not the user's - a walker
+// typing into the project name field and pressing enter leaves a real file in
+// their Documents. Noted now so it can be cleared up at the end.
+const projectsBefore = new Set(
+  (await page.evaluate(async () => (await fetch('/api/projects')).json())).names);
+
 // Put the session somewhere safe, then work on a scratch song.
 await cmd({ type: 'save', name: BACKUP });
 await cmd({ type: 'newSong' });
@@ -533,6 +539,16 @@ await page.waitForTimeout(200);
 await cmd({ type: 'load', name: BACKUP });
 await page.waitForTimeout(400);
 await cmd({ type: 'deleteProject', name: BACKUP });
+
+// And take back anything the walkers saved along the way.
+const projectsAfter =
+  (await page.evaluate(async () => (await fetch('/api/projects')).json())).names;
+for (const name of projectsAfter) {
+  if (!projectsBefore.has(name) && name !== BACKUP) {
+    await cmd({ type: 'deleteProject', name });
+    console.log(`       (removed "${name}", saved during the run)`);
+  }
+}
 
 const restored = await engine();
 if (!restored?.tracks?.length) fail('the session was not restored', 'backup failed to load');

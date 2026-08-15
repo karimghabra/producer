@@ -535,7 +535,21 @@ void Engine::render(float* left, float* right, int numSamples) {
                                              % pattern->length);
                     const double swing = theory::swingOffset(int(rt.stepCounter), song_.swing, song_.swingUnit);
                     const double nudge = double(pattern->steps[size_t(upcoming)].nudge);
-                    rt.nextStepBeats = double(rt.stepCounter) * stepBeats + (swing + nudge) * stepBeats;
+
+                    // Humanise: a jitter that belongs to the position rather
+                    // than to the moment, so the loop breathes the same way
+                    // every time round instead of wobbling differently on each
+                    // pass. A player has habits; a machine with a random number
+                    // generator just sounds unreliable.
+                    double human = 0.0;
+                    if (song_.humanize > 0.0) {
+                        const double r = theory::hashRandom(uint32_t(upcoming) * 131u
+                                                            + uint32_t(t) * 977u);
+                        human = (r - 0.5) * 2.0 * (song_.humanize / 1000.0)
+                              * song_.bpm / 60.0;      // milliseconds into beats
+                    }
+                    rt.nextStepBeats = double(rt.stepCounter) * stepBeats
+                                     + (swing + nudge) * stepBeats + human;
                 }
 
                 // Owed retriggers from a ratcheted step.

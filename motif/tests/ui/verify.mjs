@@ -403,6 +403,77 @@ check(ghosts === 4 && kickGhosts === 0,
       'a shorter pattern shows where it repeats',
       `12-step track has ${ghosts} repeat cells, 16-step track has ${kickGhosts}`);
 
+// --- the grid is laid out in time, not in step count --------------------------
+//
+// Two tracks at different rates have steps of different lengths. Drawing them
+// as the same number of equally wide cells lines them up by index, which puts
+// a 1/32 track's fourth step under a 1/16 track's fourth - two moments half a
+// beat apart. Every check here is about a column meaning the same instant on
+// every row.
+await cmd({ type: 'newSong' });
+await page.locator('[data-view="grid"]').click();
+await page.waitForTimeout(400);
+
+// Kick at 1/4 over one bar, Hats at 1/32 over the same bar.
+await cmd({ type: 'patternResolution', track: 0, value: 1 });
+await cmd({ type: 'patternLength', track: 0, value: 4 });
+await cmd({ type: 'patternResolution', track: 2, value: 8 });
+await cmd({ type: 'patternLength', track: 2, value: 32 });
+await page.waitForTimeout(500);
+
+const cellCount = async (t) =>
+  page.locator('#grid-rows .grow').nth(t).locator('.gcell').count();
+check(await cellCount(0) === 4 && await cellCount(2) === 32,
+      'a faster track is drawn with more cells, not the same number',
+      `1/4 has ${await cellCount(0)}, 1/32 has ${await cellCount(2)}`);
+
+const rowWidth = async (t) => {
+  const b = await page.locator('#grid-rows .grow').nth(t).locator('.grow-cells').boundingBox();
+  return Math.round(b.width);
+};
+check(Math.abs(await rowWidth(0) - await rowWidth(2)) <= 2,
+      'and both rows still span the same width, so they span the same time',
+      `${await rowWidth(0)}px vs ${await rowWidth(2)}px`);
+
+// The moment of beat 2 must be the same x on both rows.
+const cellLeft = async (t, s) => {
+  const b = await page.locator('#grid-rows .grow').nth(t).locator('.gcell').nth(s).boundingBox();
+  return Math.round(b.x);
+};
+check(Math.abs(await cellLeft(0, 1) - await cellLeft(2, 8)) <= 2,
+      'beat two lands at the same place on a 1/4 track and a 1/32 track',
+      `${await cellLeft(0, 1)}px vs ${await cellLeft(2, 8)}px`);
+check(Math.abs(await cellLeft(0, 3) - await cellLeft(2, 24)) <= 2,
+      'and so does beat four',
+      `${await cellLeft(0, 3)}px vs ${await cellLeft(2, 24)}px`);
+
+// The ruler counts beats, and belongs to no track in particular.
+const rulerMarks = await page.locator('#grid-ruler .gr-marks span').allTextContents();
+check(rulerMarks.join(',') === '1,2,3,4', 'the ruler counts beats, not steps',
+      rulerMarks.join(' '));
+
+// Selecting across rates must take the same span of time from each.
+const sel = async (t, s) =>
+  page.locator('#grid-rows .grow').nth(t).locator('.gcell').nth(s).boundingBox();
+const q0 = await sel(0, 0);
+const q2 = await sel(2, 7);
+await page.keyboard.down('Shift');
+await page.mouse.move(q0.x + 2, q0.y + q0.height / 2);
+await page.mouse.down();
+await page.mouse.move(q2.x + q2.width - 2, q2.y + q2.height / 2, { steps: 8 });
+await page.mouse.up();
+await page.keyboard.up('Shift');
+await page.waitForTimeout(400);
+const pickedIn = async (t) =>
+  page.locator('#grid-rows .grow').nth(t).locator('.gcell.picked').count();
+check(await pickedIn(0) === 1 && await pickedIn(2) === 8,
+      'a one-beat selection takes one step of a 1/4 track and eight of a 1/32',
+      `${await pickedIn(0)} and ${await pickedIn(2)}`);
+await page.keyboard.press('Escape');
+await page.waitForTimeout(250);
+await cmd({ type: 'newSong' });
+await page.waitForTimeout(350);
+
 // --- selecting and moving blocks of steps ------------------------------------
 await cmd({ type: 'newSong' });
 await cmd({ type: 'selectTrack', track: 0 });

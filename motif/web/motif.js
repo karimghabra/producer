@@ -871,15 +871,35 @@ function clearSelection() {
   render();
 }
 
-/** Every cell in the rectangle between two corners. */
+/**
+ * Every cell in the rectangle between two corners.
+ *
+ * Measured in beats rather than in step numbers. Tracks run at different
+ * rates, so step 4 is a different moment on each of them - selecting by index
+ * would take half a beat of a 1/32 track and a whole beat of a 1/16 one from
+ * the same drag.
+ */
 function selectBox(a, b) {
   const t0 = Math.min(a.track, b.track), t1 = Math.max(a.track, b.track);
-  const s0 = Math.min(a.step, b.step), s1 = Math.max(a.step, b.step);
+  const beatA = cellBeat(state.tracks[a.track], a.step);
+  const beatB = cellBeat(state.tracks[b.track], b.step);
+  const from = Math.min(beatA, beatB);
+  // The far corner's cell is included whole, not clipped at its leading edge.
+  const width = 1 / Math.max(1, patternOf(state.tracks[b.track])?.resolution ?? 4);
+  const to = Math.max(beatA, beatB) + width;
+
   const next = new Set();
   for (let t = t0; t <= t1; t++) {
-    const pat = state.tracks[t]?.patterns[state.tracks[t].activePattern];
+    const track = state.tracks[t];
+    const pat = patternOf(track);
     if (!pat) continue;
-    for (let s = s0; s <= s1; s++) if (s < pat.length) next.add(cellKey(t, s));
+    const step = 1 / Math.max(1, pat.resolution);
+    for (let s = 0; s < pat.length; s++) {
+      const start = s * step;
+      // Overlap, not containment: a long step that straddles the edge of the
+      // box is part of what was dragged over.
+      if (start + step > from + 1e-9 && start < to - 1e-9) next.add(cellKey(t, s));
+    }
   }
   return next;
 }
@@ -932,11 +952,41 @@ const selectionOps = {
   nudge: (what, value) => api.send('cells', { op: what, value, cells: cellList() }),
 };
 
-/** How many columns to draw: the longest pattern, within reason. */
-function gridColumns() {
-  const lengths = state.tracks.map((t) => t.patterns[t.activePattern]?.length ?? 16);
-  return Math.min(Math.max(...lengths, 8), 32);
+// --------------------------------------------------------------------------
+// The grid is laid out in time, not in step count
+//
+// A track at 1/32 has steps half the length of a track at 1/16. Giving every
+// track the same number of equally wide cells lines them up by index, which
+// puts a 1/32 track's fourth step underneath a 1/16 track's fourth step - two
+// places that are half a beat apart. The rate control then appeared to do
+// nothing but add cells.
+//
+// So: every row spans the same number of beats, and a row's cells are as wide
+// as the steps they represent. A 1/32 track shows twice as many, half as wide,
+// and every column line is a real moment in time across all of them.
+// --------------------------------------------------------------------------
+
+const patternOf = (t) => t.patterns[t.activePattern];
+/** A pattern's length in beats, which is what has to be shared. */
+const beatsOf = (t) => {
+  const p = patternOf(t);
+  return p ? p.length / Math.max(1, p.resolution) : 4;
+};
+
+/** The window every row is drawn across, in beats. */
+function gridSpanBeats() {
+  const longest = Math.max(...state.tracks.map(beatsOf), 1);
+  // Rounded up to a whole beat so the ruler lands on beats, and capped so a
+  // very long pattern does not squeeze everything else into nothing.
+  return Math.min(Math.ceil(longest - 1e-9), 32);
 }
+
+/** How many cells a track needs to cover the window at its own rate. */
+const cellsFor = (t, spanBeats) =>
+  Math.max(1, Math.round(spanBeats * Math.max(1, patternOf(t)?.resolution ?? 4)));
+
+/** Where a cell sits in time, in beats. */
+const cellBeat = (t, step) => step / Math.max(1, patternOf(t)?.resolution ?? 4);
 
 /**
  * A step's pitch, as a MIDI note. Mirrors degreeToMidi in Theory.h.
@@ -970,21 +1020,22 @@ function pitchSpan(pat) {
 }
 
 function renderGrid() {
-  const cols = gridColumns();
+  const spanBeats = gridSpanBeats();
+  const beatsPerBar = state.beatsPerBar || 4;
 
+  // The ruler is in beats, and belongs to no track in particular. Reading it
+  // off the armed track's resolution made it wrong for every other track.
   const ruler = $('#grid-ruler');
   ruler.innerHTML = '<div class="gr-head"></div>';
   const marks = document.createElement('div');
   marks.className = 'gr-marks';
-  marks.style.gridTemplateColumns = `repeat(${cols},1fr)`;
-  // Numbered by beat rather than by step: the armed track's resolution is the
-  // one you are counting in, and every fourth box being labelled is what makes
-  // a grid readable at a glance.
-  const res = state.tracks[selected]?.patterns[state.tracks[selected].activePattern]?.resolution || 4;
-  for (let i = 0; i < cols; i++) {
+  marks.style.gridTemplateColumns = `repeat(${spanBeats},1fr)`;
+  for (let b = 0; b < spanBeats; b++) {
     const m = document.createElement('span');
-    m.className = i % res === 0 ? 'beat' : '';
-    m.textContent = i % res === 0 ? String(i / res + 1) : '';
+    const bar = Math.floor(b / beatsPerBar) + 1;
+    const beat = (b % beatsPerBar) + 1;
+    m.className = beat === 1 ? 'bar' : 'beat';
+    m.textContent = beat === 1 ? String(bar) : String(beat);
     marks.append(m);
   }
   ruler.append(marks);
@@ -1039,6 +1090,12 @@ function renderGrid() {
     head.onclick = () => { selected = ti; api.send('selectTrack', { track: ti }); };
     row.append(head);
 
+    // This row's own cell count: enough of its own steps to fill the shared
+    // window. Equal total width, different numbers of cells, so a column line
+    // is the same moment on every track.
+    const cols = cellsFor(t, spanBeats);
+    const res = Math.max(1, pat.resolution);
+
     const cells = document.createElement('div');
     cells.className = 'grow-cells';
     cells.style.gridTemplateColumns = `repeat(${cols},1fr)`;
@@ -1054,7 +1111,10 @@ function renderGrid() {
       el.className = 'gcell'
         + (s?.on ? ' on' : '')
         + (repeat ? ' ghost' : '')
+        // Marked against the beat, which is the same everywhere, rather than
+        // against a step count that means something different per track.
         + (i % res === 0 ? ' beat' : '')
+        + (i % (res * beatsPerBar) === 0 ? ' bar' : '')
         + (step === 0 && repeat ? ' wrap' : '')
         + (pitched ? ' pitched' : '')
         + (state.playing && step === t.step ? ' here' : '');
@@ -2653,9 +2713,10 @@ addEventListener('keydown', (e) => {
     }
     if (k === 'a') {
       e.preventDefault();
-      const cols = gridColumns();
+      const last = state.tracks.length - 1;
+      const lastPat = patternOf(state.tracks[last]);
       selection = selectBox({ track: 0, step: 0 },
-                            { track: state.tracks.length - 1, step: cols - 1 });
+                            { track: last, step: (lastPat?.length ?? 16) - 1 });
       lastShape = null; render();
       flash(`${selection.size} steps selected`);
       return;

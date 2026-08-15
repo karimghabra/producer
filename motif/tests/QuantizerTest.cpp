@@ -642,6 +642,34 @@ int main() {
               "section " + std::to_string(engine.currentSection()));
     }
 
+    // --- humanise ------------------------------------------------------------
+    //
+    // The control existed, was saved, and had a knob, and the engine never read
+    // it. These check it does something, that what it does is bounded, and that
+    // it is the same something every time round the loop - a player has habits,
+    // a machine with a random number generator just sounds unreliable.
+    std::printf("\nHumanise:\n");
+    {
+        const double a = theory::hashRandom(3 * 131 + 1 * 977);
+        const double b = theory::hashRandom(3 * 131 + 1 * 977);
+        check(a == b, "the same position always jitters the same way",
+              std::to_string(a).substr(0, 6));
+        check(theory::hashRandom(3 * 131 + 1 * 977) != theory::hashRandom(4 * 131 + 1 * 977),
+              "and neighbouring positions do not share a value", "");
+        check(theory::hashRandom(3 * 131 + 1 * 977) != theory::hashRandom(3 * 131 + 2 * 977),
+              "nor do the same step on different tracks", "");
+
+        double lo = 1.0, hi = 0.0;
+        for (int i = 0; i < 4096; ++i) {
+            const double r = theory::hashRandom(i);
+            lo = std::min(lo, r);
+            hi = std::max(hi, r);
+        }
+        check(lo >= 0.0 && hi <= 1.0 && lo < 0.02 && hi > 0.98,
+              "and the jitter covers its range evenly",
+              std::to_string(lo).substr(0, 5) + " .. " + std::to_string(hi).substr(0, 5));
+    }
+
     // --- a real take, as measured through the interface ----------------------
     //
     // These are the onset times of sixteen eighth notes played at 128 BPM,
